@@ -8,7 +8,7 @@ version = "0.1.0"
 description = "Provider-agnostic runtime for AI agents with per-project persistent knowledge."
 readme = "README.md"
 license = { file = "LICENSE" }
-authors = [{ name = "Airy Chan", email = "heyitsairy@gmail.com" }]
+authors = [{ name = "Justin Chan", email = "csnow.to@gmail.com" }]
 requires-python = ">=3.13"
 classifiers = [
     "Development Status :: 3 - Alpha",
