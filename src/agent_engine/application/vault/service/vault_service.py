@@ -36,7 +36,7 @@ class VaultService:
             tags=tags,
             created_at=datetime.now(timezone.utc),
         )
-        self._repository.save(entry)
+        path = self._repository.save(entry)
         self._index.upsert(entry.entry_id, f"{entry.title}\n{entry.body}")
         logger.info(
             "vault_write",
@@ -44,6 +44,7 @@ class VaultService:
             kind=entry.kind,
             title=entry.title,
             tag_count=len(entry.tags),
+            path=str(path),
         )
         return entry
 
@@ -52,9 +53,10 @@ class VaultService:
         hits: list[VaultSearchHit] = []
         for entry_id, score in raw:
             entry = self._repository.get(entry_id)
-            if entry is None:
+            path = self._repository.path_for(entry_id)
+            if entry is None or path is None:
                 continue
-            hits.append(VaultSearchHit(entry=entry, score=score))
+            hits.append(VaultSearchHit(entry=entry, score=score, path=path))
         logger.info("vault_search", query_preview=query[:120], result_count=len(hits))
         return hits
 

@@ -1,18 +1,15 @@
 import pytest
 
 from agent_engine.application.vault.service.vault_service import VaultService
-from agent_engine.infrastructure.persistence.database import open_database
+from agent_engine.infrastructure.vault.file_vault_repository import FileVaultRepository
 from agent_engine.infrastructure.vault.in_memory_vector_index import InMemoryVectorIndex
-from agent_engine.infrastructure.vault.sqlite_vault_repository import SqliteVaultRepository
 
 
 @pytest.fixture()
 def vault(tmp_path):
-    connection = open_database(tmp_path / "test.db")
-    repository = SqliteVaultRepository(connection)
+    repository = FileVaultRepository(tmp_path / "vault")
     index = InMemoryVectorIndex()
-    yield VaultService(repository=repository, index=index)
-    connection.close()
+    return VaultService(repository=repository, index=index)
 
 
 def test_write_then_search(vault):
@@ -23,6 +20,14 @@ def test_write_then_search(vault):
     hits = vault.search("concurrency", limit=5)
     assert hits
     assert hits[0].entry.title == "Use WAL"
+
+
+def test_search_hits_carry_file_paths(vault, tmp_path):
+    entry = vault.write(kind="note", title="hello", body="oauth session")
+    hits = vault.search("oauth", limit=5)
+    assert hits
+    assert hits[0].path == tmp_path / "vault" / f"{entry.entry_id}.md"
+    assert hits[0].path.is_file()
 
 
 def test_recall_returns_full_entry(vault):
@@ -55,3 +60,12 @@ def test_tags_are_preserved(vault):
     entry = vault.write(kind="note", title="t", body="b", tags=("a", "b"))
     recalled = vault.recall(entry.entry_id)
     assert recalled.tags == ("a", "b")
+
+
+def test_write_creates_markdown_file_on_disk(vault, tmp_path):
+    entry = vault.write(kind="decision", title="Use WAL", body="concurrency")
+    path = tmp_path / "vault" / f"{entry.entry_id}.md"
+    assert path.is_file()
+    text = path.read_text(encoding="utf-8")
+    assert text.startswith("---\n")
+    assert "concurrency" in text

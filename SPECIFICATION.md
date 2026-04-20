@@ -43,6 +43,7 @@ src/agent_engine/
 │   ├── run/service/resume_handle_store.py
 │   ├── vault/repository/vault_repository.py  # VaultRepository ABC
 │   ├── vault/index/vector_index.py  # VectorIndex ABC
+│   ├── vault/scanner/vault_scanner.py        # VaultScanner ABC, ScanReport
 │   ├── vault/service/vault_service.py
 │   └── integration/intake.py        # Intake ABC
 ├── integrations/
@@ -62,12 +63,14 @@ src/agent_engine/
 │   │   └── session_rollback.py
 │   └── codex/runner.py              # stub
 ├── infrastructure/
-│   ├── vault/sqlite_vault_repository.py
-│   ├── vault/in_memory_vector_index.py       # dev/test default
-│   ├── vault/sentence_transformers_index.py  # production default
-│   ├── persistence/database.py               # sqlite schema
+│   ├── vault/file_vault_repository.py      # markdown file repository
+│   ├── vault/file_vault_scanner.py         # directory scanner + index sync
+│   ├── vault/markdown_frontmatter.py       # YAML frontmatter format/parse
+│   ├── vault/in_memory_vector_index.py     # dev/test default
+│   ├── vault/sentence_transformers_index.py # production default
+│   ├── persistence/database.py             # sqlite schema (resume handles only)
 │   ├── persistence/sqlite_resume_handle_store.py
-│   └── system/config/config.py               # YAML config loader
+│   └── system/config/config.py             # YAML config loader
 └── tools/
     └── vault_tools.py               # vault_write / vault_search / vault_recall
 ```
@@ -110,28 +113,63 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 
 ## Vault
 
+### Model
+
 - **Entry shape**: `entry_id` (uuid), `kind` (free-form), `title`, `body`, `tags: tuple[str, ...]`, `created_at` (UTC).
-- **Repository**: `VaultRepository` ABC with SQLite impl in `infrastructure/vault/sqlite_vault_repository.py`. Schema lives in `infrastructure/persistence/database.py`.
-- **Vector index**: `VectorIndex` ABC. Two impls:
+- **Search hit**: `VaultSearchHit(entry, score, path)`. The `path` is the absolute filesystem path of the backing markdown file.
+
+### Storage: markdown files
+
+- Each entry is a `.md` file in `config.vault.directory` named `{entry_id}.md`.
+- Frontmatter is YAML between `---` fences with keys `id`, `kind`, `title`, `tags`, `created_at`. The body follows.
+- Markdown files are the source of truth. Deleting a file removes the entry. Editing a file changes the entry on the next scan.
+- `FileVaultRepository` (`infrastructure/vault/file_vault_repository.py`) implements `VaultRepository` against a directory. Writes are atomic via `tempfile + os.replace`.
+- `markdown_frontmatter.format_entry / parse_entry` (`infrastructure/vault/markdown_frontmatter.py`) render and parse the file format.
+- `FileVaultScanner` (`infrastructure/vault/file_vault_scanner.py`) walks the vault directory recursively for `.md` files, indexes entries whose file checksum has changed, and removes index entries whose files have disappeared. Checksums are stored at `{vault.directory}/.vault_checksums.json`.
+
+### Vector index
+
+- `VectorIndex` ABC in `application/vault/index/vector_index.py`. Exposes `upsert`, `remove`, `search`, `ids`, `close`.
+- Two implementations:
   - `SentenceTransformersIndex` (default, production) — loads a sentence-transformers model lazily, persists embeddings to `{data-dir}/index.pkl`.
   - `InMemoryVectorIndex` (tests and --no-embeddings use) — token-cosine over lowercase word tokens.
-- **Service**: `VaultService.write(kind, title, body, tags=())`, `.search(query, limit=5)`, `.recall(entry_id)`, `.list(limit=100)`, `.delete(entry_id)`, `.count()`.
-- **Tools**: `tools/vault_tools.py` wraps the service as three MCP tools (`vault_write`, `vault_search`, `vault_recall`) and returns an `McpSdkServerConfig` via `build_vault_mcp_server(vault_service)`.
+
+### Scanner
+
+- `VaultScanner` ABC in `application/vault/scanner/vault_scanner.py`. `scan(force=False) -> ScanReport`.
+- `ScanReport(indexed, skipped_unchanged, removed, total)` summarises one pass.
+- `FileVaultScanner` is invoked once at engine startup from `build_engine`. It performs delta indexing via file checksums.
+- Writes through the service are indexed immediately. The scanner is the authority for drift between files and index (files edited directly on disk, files deleted, files added out of band).
+
+### Service
+
+- `VaultService.write(kind, title, body, tags=())` → writes markdown file via repository, upserts vector entry, returns `VaultEntry`.
+- `VaultService.search(query, limit=5)` → asks index for top-k ids, hydrates entries via repository, returns `list[VaultSearchHit]` with paths.
+- `VaultService.recall(entry_id)` → reads the markdown file.
+- `VaultService.list(limit=100)` → returns recent entries by `created_at`.
+- `VaultService.delete(entry_id)` → unlinks the file and removes the index entry.
+- `VaultService.count()` → number of vault files.
+
+### Tools
+
+- `tools/vault_tools.py` wraps the service as three MCP tools (`vault_write`, `vault_search`, `vault_recall`) and returns an `McpSdkServerConfig` via `build_vault_mcp_server(vault_service)`.
+- `vault_search` output includes the backing file path for each hit.
 
 ## Resume handles
 
 - `ResumeHandle(provider: str, session_id: str)`.
-- `ResumeHandleStore` ABC persists `resume_key → ResumeHandle`. SQLite impl keys on `resume_key` in the `resume_handles` table.
+- `ResumeHandleStore` ABC persists `resume_key → ResumeHandle`. SQLite impl keys on `resume_key` in the `resume_handles` table. SQLite is used only for resume handles; vault entries live as files.
 - Integrations supply a stable `resume_key` per logical conversation (e.g. Discord thread id). `RunService` fetches the matching handle, passes it to the runner, and persists the runner's returned handle.
 
 ## Config
 
 - Config at `{data-dir}/config.yaml`.
 - Default data-dir: `~/.agent-engine/`. Override with `--data-dir`.
+- Default vault directory: `{data-dir}`. Override with `vault.directory` in config.
 - Precedence: config file > defaults, with env overrides on top.
 - Env overrides: `AGENT_ENGINE_DISCORD_TOKEN`, `AGENT_ENGINE_DISCORD_CHANNEL_ID`, `AGENT_ENGINE_HTTP_PORT`, `AGENT_ENGINE_LOG_LEVEL`.
 - Config object is immutable (`@dataclass(frozen=True)`).
-- Database and vault index live in `data-dir`. No files are written to `cwd`.
+- Database, vault directory, and vector index all live under `data-dir` by default. No files are written to `cwd`.
 
 ## Integrations
 
@@ -141,7 +179,7 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 - `POST /runs/{run_id}/cancel` — interrupts a running run.
 - `GET /runs` — active run ids.
 - `GET /health` — status + active run count + vault entry count.
-- `GET /vault/search?q=...&limit=...` — top-k hits.
+- `GET /vault/search?q=...&limit=...` — top-k hits, each with its backing file `path`.
 - `GET /vault/entries/{id}` — full entry.
 - `POST /vault/entries` — create an entry directly.
 - Served by Uvicorn on `http.host:http.port` (default `127.0.0.1:8938`).
@@ -179,7 +217,7 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 
 `main.run_engine(cwd, data_dir, disable_discord, disable_http)`:
 
-1. `build_engine(cwd)` — load config, configure logging, open SQLite, build vault + runner + resume store + `RunService`.
+1. `build_engine(cwd)` — load config, configure logging, open SQLite, build vault service + scanner (run one scan to index any out-of-band files), runner, resume store, `RunService`.
 2. `_build_intakes()` — instantiate HTTP and Discord intakes per config.
 3. Start each intake sequentially. Wait on `stop_event` (SIGINT/SIGTERM).
 4. On shutdown: stop intakes in reverse order, close SQLite.

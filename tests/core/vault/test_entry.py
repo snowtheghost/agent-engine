@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from pathlib import Path
 
 from agent_engine.core.vault.model.entry import VaultEntry, VaultSearchHit
 
@@ -15,7 +16,7 @@ def test_entry_frozen():
     assert entry.tags == ("sqlite", "perf")
 
 
-def test_search_hit_carries_score():
+def test_search_hit_carries_score_and_path():
     entry = VaultEntry(
         entry_id="e1",
         kind="note",
@@ -24,5 +25,6 @@ def test_search_hit_carries_score():
         tags=(),
         created_at=datetime.now(timezone.utc),
     )
-    hit = VaultSearchHit(entry=entry, score=0.42)
+    hit = VaultSearchHit(entry=entry, score=0.42, path=Path("/tmp/e1.md"))
     assert hit.score == 0.42
+    assert hit.path == Path("/tmp/e1.md")

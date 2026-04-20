@@ -78,9 +78,11 @@ agent-engine --cwd . serve --no-discord --no-http
 
 `VaultEntry`: `id`, `kind` (free-form category: decision / pattern / gotcha / api-note / whatever), `title`, `body`, `tags`, `created_at`.
 
+Storage is plain markdown. Every entry is a `{id}.md` file under the vault directory (`~/.agent-engine/` by default, or `vault.directory` in config). The file starts with a YAML frontmatter block (`id`, `kind`, `title`, `tags`, `created_at`) followed by the body. Markdown files are the source of truth — edit them, delete them, move them with `git mv`, and the engine picks up the change on the next scan.
+
 The agent writes entries through an MCP tool `vault_write`. It searches through `vault_search`, recalls by id through `vault_recall`. These are exposed to Claude Code as the `mcp__vault__*` tools. Any future provider wraps them the same way.
 
-Storage: SQLite at `.agent-engine/agent-engine.db` + sentence-transformers index at `.agent-engine/index.pkl`. Commit them if you want shared team memory, gitignore them if private.
+On startup, a scanner walks the vault directory and syncs the vector index with the files on disk: new files get indexed, changed files get re-indexed (via MD5 checksum stored in `.vault_checksums.json`), and deleted files get purged. The sentence-transformers embedding cache lives at `{vault.directory}/index.pkl`. Commit the markdown if you want shared team memory, gitignore it if private.
 
 ## Adding a provider
 

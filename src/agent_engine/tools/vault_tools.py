@@ -96,6 +96,7 @@ def build_vault_mcp_tools(vault: VaultService) -> list[SdkMcpTool[Any]]:
                     f"\n  kind: {hit.entry.kind}"
                     f"\n  title: {hit.entry.title}"
                     f"\n  tags: {tags}"
+                    f"\n  path: {hit.path}"
                     f"\n  preview: {body_preview}"
                 )
             text = "\n".join(lines)

@@ -1,9 +1,8 @@
 import pytest
 
 from agent_engine.application.vault.service.vault_service import VaultService
-from agent_engine.infrastructure.persistence.database import open_database
+from agent_engine.infrastructure.vault.file_vault_repository import FileVaultRepository
 from agent_engine.infrastructure.vault.in_memory_vector_index import InMemoryVectorIndex
-from agent_engine.infrastructure.vault.sqlite_vault_repository import SqliteVaultRepository
 from agent_engine.tools.vault_tools import (
     VAULT_TOOL_NAMES,
     build_vault_mcp_server,
@@ -13,12 +12,10 @@ from agent_engine.tools.vault_tools import (
 
 @pytest.fixture()
 def vault(tmp_path):
-    connection = open_database(tmp_path / "test.db")
-    yield VaultService(
-        repository=SqliteVaultRepository(connection),
+    return VaultService(
+        repository=FileVaultRepository(tmp_path / "vault"),
         index=InMemoryVectorIndex(),
     )
-    connection.close()
 
 
 def _tool(vault, name):
@@ -47,6 +44,7 @@ async def test_search_tool_returns_hit(vault):
     text = result["content"][0]["text"]
     assert "Found 1 entries" in text
     assert "auth flow" in text
+    assert "path:" in text
 
 
 @pytest.mark.asyncio

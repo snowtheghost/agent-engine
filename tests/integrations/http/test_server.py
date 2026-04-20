@@ -6,9 +6,8 @@ from agent_engine.application.run.service.run_service import RunService
 from agent_engine.application.vault.service.vault_service import VaultService
 from agent_engine.core.run.model.resume_handle import ResumeHandle
 from agent_engine.core.run.model.run_result import RunResult
-from agent_engine.infrastructure.persistence.database import open_database
+from agent_engine.infrastructure.vault.file_vault_repository import FileVaultRepository
 from agent_engine.infrastructure.vault.in_memory_vector_index import InMemoryVectorIndex
-from agent_engine.infrastructure.vault.sqlite_vault_repository import SqliteVaultRepository
 from agent_engine.integrations.http.server import build_app
 
 
@@ -57,15 +56,13 @@ class StubRunner:
 
 @pytest.fixture()
 def client(tmp_path):
-    connection = open_database(tmp_path / "t.db")
     vault = VaultService(
-        repository=SqliteVaultRepository(connection),
+        repository=FileVaultRepository(tmp_path / "vault"),
         index=InMemoryVectorIndex(),
     )
     run_service = RunService(runner=StubRunner(), resume_handles=InMemoryStore())
     app = build_app(run_service, vault)
-    yield TestClient(app)
-    connection.close()
+    return TestClient(app)
 
 
 def test_health(client):
@@ -104,6 +101,7 @@ def test_vault_roundtrip(client):
     body = search.json()
     assert body["results"]
     assert body["results"][0]["entry_id"] == entry_id
+    assert body["results"][0]["path"].endswith(f"{entry_id}.md")
 
 
 def test_vault_recall_not_found(client):

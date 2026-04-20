@@ -30,3 +30,13 @@ def test_limit_is_respected():
         index.upsert(f"e{i}", "the same words every time")
     hits = index.search("same words", limit=3)
     assert len(hits) == 3
+
+
+def test_ids_returns_current_entries():
+    index = InMemoryVectorIndex()
+    assert index.ids() == set()
+    index.upsert("e1", "x")
+    index.upsert("e2", "y")
+    assert index.ids() == {"e1", "e2"}
+    index.remove("e1")
+    assert index.ids() == {"e2"}

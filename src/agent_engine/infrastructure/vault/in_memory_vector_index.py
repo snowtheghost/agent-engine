@@ -48,5 +48,8 @@ class InMemoryVectorIndex(VectorIndex):
         scored.sort(key=lambda pair: pair[1], reverse=True)
         return scored[:limit]
 
+    def ids(self) -> set[str]:
+        return set(self._vectors.keys())
+
     def close(self) -> None:
         self._vectors.clear()

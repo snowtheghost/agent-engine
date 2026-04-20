@@ -95,6 +95,7 @@ def build_app(run_service: RunService, vault: VaultService) -> FastAPI:
                     "body": hit.entry.body,
                     "created_at": hit.entry.created_at.isoformat(),
                     "score": hit.score,
+                    "path": str(hit.path),
                 }
                 for hit in hits
             ],
