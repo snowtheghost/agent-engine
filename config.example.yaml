@@ -1,0 +1,23 @@
+provider:
+  name: claude
+  model: null
+  options:
+    timezone: UTC
+    max_buffer_size: 100000000
+    betas: []
+
+vault:
+  embedding_model: all-MiniLM-L6-v2
+
+discord:
+  token: null
+  channel_id: null
+  character_limit: 2000
+  history_limit: 50
+
+http:
+  host: 127.0.0.1
+  port: 8938
+  enabled: true
+
+log_level: INFO
