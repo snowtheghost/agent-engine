@@ -69,10 +69,10 @@ def _build_runner(config: EngineConfig, vault_service: VaultService) -> Runner:
     raise ValueError(f"Unknown provider: {name}")
 
 
-def build_engine(cwd: Path) -> Engine:
-    config = load_config(cwd)
+def build_engine(cwd: Path, data_dir: Path | None = None) -> Engine:
+    config = load_config(cwd, data_dir=data_dir)
     configure_logging(config.log_level)
-    config.engine_dir.mkdir(parents=True, exist_ok=True)
+    config.data_dir.mkdir(parents=True, exist_ok=True)
 
     connection = open_database(config.database_path)
     vault_service = _build_vault_service(config, connection)
@@ -137,11 +137,12 @@ def _build_intakes(
 
 async def run_engine(
     cwd: Path,
+    data_dir: Path | None = None,
     *,
     disable_discord: bool = False,
     disable_http: bool = False,
 ) -> None:
-    engine = build_engine(cwd)
+    engine = build_engine(cwd, data_dir=data_dir)
     engine.intakes = _build_intakes(
         engine, disable_discord=disable_discord, disable_http=disable_http
     )

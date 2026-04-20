@@ -6,6 +6,9 @@ from typing import Any
 import yaml
 
 
+_DEFAULT_DATA_DIR = Path.home() / ".agent-engine"
+
+
 @dataclass(frozen=True)
 class DiscordConfig:
     token: str | None
@@ -37,6 +40,7 @@ class ProviderConfig:
 @dataclass(frozen=True)
 class EngineConfig:
     cwd: Path
+    data_dir: Path
     provider: ProviderConfig
     vault: VaultConfig
     discord: DiscordConfig
@@ -44,12 +48,8 @@ class EngineConfig:
     log_level: str
 
     @property
-    def engine_dir(self) -> Path:
-        return self.cwd / ".agent-engine"
-
-    @property
     def database_path(self) -> Path:
-        return self.engine_dir / "agent-engine.db"
+        return self.data_dir / "agent-engine.db"
 
 
 _DEFAULTS: dict[str, Any] = {
@@ -104,16 +104,17 @@ def _env_overrides() -> dict[str, Any]:
     return overrides
 
 
-def load_config(cwd: Path | str) -> EngineConfig:
+def load_config(cwd: Path | str, data_dir: Path | str | None = None) -> EngineConfig:
     cwd_path = Path(cwd).resolve()
     if not cwd_path.is_dir():
         raise FileNotFoundError(f"cwd does not exist: {cwd_path}")
 
-    global_path = Path.home() / ".agent-engine" / "config.yaml"
-    project_path = cwd_path / ".agent-engine" / "config.yaml"
+    home = Path.home()
+    data_dir_path = Path(data_dir).resolve() if data_dir else home / ".agent-engine"
 
-    merged = _merge(_DEFAULTS, _load_yaml(global_path))
-    merged = _merge(merged, _load_yaml(project_path))
+    config_path = data_dir_path / "config.yaml"
+
+    merged = _merge(_DEFAULTS, _load_yaml(config_path))
     merged = _merge(merged, _env_overrides())
 
     provider_raw = merged["provider"]
@@ -123,9 +124,12 @@ def load_config(cwd: Path | str) -> EngineConfig:
         options=provider_raw.get("options", {}) or {},
     )
 
+    vault_directory_raw = merged["vault"].get("directory")
+    vault_directory = Path(vault_directory_raw).resolve() if vault_directory_raw else data_dir_path
+
     vault = VaultConfig(
         embedding_model=merged["vault"]["embedding_model"],
-        directory=cwd_path / ".agent-engine",
+        directory=vault_directory,
     )
 
     discord_raw = merged["discord"]
@@ -149,6 +153,7 @@ def load_config(cwd: Path | str) -> EngineConfig:
 
     return EngineConfig(
         cwd=cwd_path,
+        data_dir=data_dir_path,
         provider=provider,
         vault=vault,
         discord=discord,
