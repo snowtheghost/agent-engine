@@ -116,17 +116,21 @@ def _build_intakes(
             HttpIntake(app=app, host=engine.config.http.host, port=engine.config.http.port)
         )
 
-    if not disable_discord and engine.config.discord.token:
-        intakes.append(
-            DiscordIntake(
-                token=engine.config.discord.token,
-                channel_id=engine.config.discord.channel_id,
-                run_service=engine.run_service,
-                character_limit=engine.config.discord.character_limit,
+    if not disable_discord:
+        discord_config = engine.config.discord
+        if discord_config.token and discord_config.channel_id is not None:
+            intakes.append(
+                DiscordIntake(
+                    token=discord_config.token,
+                    channel_id=discord_config.channel_id,
+                    run_service=engine.run_service,
+                    character_limit=discord_config.character_limit,
+                )
             )
-        )
-    elif not disable_discord:
-        logger.info("discord_intake_skipped_no_token")
+        elif not discord_config.token:
+            logger.info("discord_intake_skipped_no_token")
+        else:
+            logger.info("discord_intake_skipped_no_channel_id")
 
     return intakes
 

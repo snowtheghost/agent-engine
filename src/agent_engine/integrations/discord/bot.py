@@ -8,6 +8,8 @@ from agent_engine.application.run.service.run_service import RunService
 
 logger = structlog.get_logger(__name__)
 
+_THREAD_ALREADY_EXISTS_CODE = 160004
+
 
 class DiscordIntake(Intake):
 
@@ -15,12 +17,17 @@ class DiscordIntake(Intake):
         self,
         *,
         token: str,
-        channel_id: int | None,
+        channel_id: int,
         run_service: RunService,
         character_limit: int = 2000,
     ) -> None:
+        if not token:
+            raise ValueError("DiscordIntake requires a non-empty token")
+        if not channel_id:
+            raise ValueError("DiscordIntake requires a channel_id")
+
         self._token = token
-        self._channel_id = channel_id
+        self._channel_id = int(channel_id)
         self._run_service = run_service
         self._character_limit = character_limit
 
@@ -39,7 +46,7 @@ class DiscordIntake(Intake):
 
     async def start(self) -> None:
         self._task = asyncio.create_task(self._client.start(self._token))
-        logger.info("discord_intake_starting")
+        logger.info("discord_intake_starting", channel_id=self._channel_id)
 
     async def stop(self) -> None:
         await self._client.close()
@@ -50,6 +57,18 @@ class DiscordIntake(Intake):
                 logger.warning("discord_intake_stop_timeout")
                 self._task.cancel()
         logger.info("discord_intake_stopped")
+
+    def _root_channel_id(self, message: discord.Message) -> int | None:
+        channel = message.channel
+        if isinstance(channel, discord.Thread):
+            return channel.parent_id
+        if isinstance(channel, discord.TextChannel):
+            return channel.id
+        return None
+
+    def _matches_configured_channel(self, message: discord.Message) -> bool:
+        root_id = self._root_channel_id(message)
+        return root_id is not None and root_id == self._channel_id
 
     def _register_handlers(self) -> None:
 
@@ -63,35 +82,55 @@ class DiscordIntake(Intake):
 
         @self._client.event
         async def on_message(message: discord.Message) -> None:
-            if message.author.bot:
+            if message.author.bot or message.author == self._client.user:
                 return
-            if message.author == self._client.user:
+
+            if not self._matches_configured_channel(message):
+                logger.debug(
+                    "discord_message_ignored",
+                    channel_id=getattr(message.channel, "id", None),
+                    parent_id=getattr(message.channel, "parent_id", None),
+                    configured_channel_id=self._channel_id,
+                )
                 return
 
             channel = message.channel
             if isinstance(channel, discord.Thread):
-                parent = channel.parent
-                if (
-                    self._channel_id is not None
-                    and parent is not None
-                    and parent.id != self._channel_id
-                ):
-                    return
                 await self._handle_thread_message(channel, message)
                 return
-
             if isinstance(channel, discord.TextChannel):
-                if self._channel_id is not None and channel.id != self._channel_id:
-                    return
                 await self._handle_channel_message(channel, message)
+
+    async def _ensure_thread(
+        self,
+        channel: discord.TextChannel,
+        message: discord.Message,
+    ) -> discord.Thread:
+        title = message.content[:80] if message.content else f"Run {message.id}"
+        try:
+            return await message.create_thread(name=title, auto_archive_duration=1440)
+        except discord.HTTPException as error:
+            if getattr(error, "code", 0) != _THREAD_ALREADY_EXISTS_CODE:
+                raise
+            logger.info(
+                "discord_thread_already_exists",
+                message_id=message.id,
+                channel_id=channel.id,
+            )
+            existing = channel.get_thread(message.id)
+            if existing is not None:
+                return existing
+            fetched = await channel.guild.fetch_channel(message.id)
+            if not isinstance(fetched, discord.Thread):
+                raise
+            return fetched
 
     async def _handle_channel_message(
         self,
         channel: discord.TextChannel,
         message: discord.Message,
     ) -> None:
-        title = message.content[:80] if message.content else f"Run {message.id}"
-        thread = await message.create_thread(name=title, auto_archive_duration=1440)
+        thread = await self._ensure_thread(channel, message)
         await self._dispatch_and_reply(thread, message.content, resume_key=str(thread.id))
 
     async def _handle_thread_message(
