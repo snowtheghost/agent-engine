@@ -9,6 +9,7 @@ import structlog
 from agent_engine.application.integration.intake import Intake
 from agent_engine.application.run.runner.runner import Runner
 from agent_engine.application.run.service.run_service import RunService
+from agent_engine.application.vault.scanner.vault_scanner import VaultScanner
 from agent_engine.application.vault.service.vault_service import VaultService
 from agent_engine.infrastructure.persistence.database import open_database
 from agent_engine.infrastructure.persistence.sqlite_resume_handle_store import (
@@ -16,7 +17,8 @@ from agent_engine.infrastructure.persistence.sqlite_resume_handle_store import (
 )
 from agent_engine.infrastructure.system.config.config import EngineConfig, load_config
 from agent_engine.infrastructure.system.logging.logging import configure_logging
-from agent_engine.infrastructure.vault.sqlite_vault_repository import SqliteVaultRepository
+from agent_engine.infrastructure.vault.file_vault_repository import FileVaultRepository
+from agent_engine.infrastructure.vault.file_vault_scanner import FileVaultScanner
 from agent_engine.integrations.discord.bot import DiscordIntake
 from agent_engine.integrations.http.server import HttpIntake, build_app
 from agent_engine.providers.claude.runner import ClaudeCodeRunner
@@ -32,21 +34,27 @@ class Engine:
     connection: sqlite3.Connection
     run_service: RunService
     vault_service: VaultService
+    vault_scanner: VaultScanner
     intakes: list[Intake]
 
 
-def _build_vault_service(config: EngineConfig, connection: sqlite3.Connection) -> VaultService:
+def _build_vault(config: EngineConfig) -> tuple[VaultService, VaultScanner]:
     from agent_engine.infrastructure.vault.sentence_transformers_index import (
         SentenceTransformersIndex,
     )
 
-    repository = SqliteVaultRepository(connection)
+    repository = FileVaultRepository(config.vault.directory)
     index_path = config.vault.directory / "index.pkl"
     index = SentenceTransformersIndex(
         model_name=config.vault.embedding_model,
         storage_path=index_path,
     )
-    return VaultService(repository=repository, index=index)
+    scanner = FileVaultScanner(
+        directory=config.vault.directory,
+        index=index,
+    )
+    service = VaultService(repository=repository, index=index)
+    return service, scanner
 
 
 def _build_runner(config: EngineConfig, vault_service: VaultService) -> Runner:
@@ -75,7 +83,8 @@ def build_engine(cwd: Path, data_dir: Path | None = None) -> Engine:
     config.data_dir.mkdir(parents=True, exist_ok=True)
 
     connection = open_database(config.database_path)
-    vault_service = _build_vault_service(config, connection)
+    vault_service, vault_scanner = _build_vault(config)
+    vault_scanner.scan()
     runner = _build_runner(config, vault_service)
     resume_store = SqliteResumeHandleStore(connection)
     run_service = RunService(runner=runner, resume_handles=resume_store)
@@ -91,6 +100,7 @@ def build_engine(cwd: Path, data_dir: Path | None = None) -> Engine:
         connection=connection,
         run_service=run_service,
         vault_service=vault_service,
+        vault_scanner=vault_scanner,
         intakes=[],
     )
 
