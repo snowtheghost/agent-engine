@@ -8,7 +8,7 @@ Agent Engine is a provider-agnostic, integration-agnostic runtime for AI agents.
 
 ## Non-purposes
 
-- No multi-project routing. One process, one `cwd`.
+- No multi-project routing. One process, one `cwd`, one `data-dir`.
 - No persona, identity, mind, experience, world concept.
 - No remote execution. The engine runs where the code lives.
 - No cross-instance state. Two projects means two processes.
@@ -113,7 +113,7 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 - **Entry shape**: `entry_id` (uuid), `kind` (free-form), `title`, `body`, `tags: tuple[str, ...]`, `created_at` (UTC).
 - **Repository**: `VaultRepository` ABC with SQLite impl in `infrastructure/vault/sqlite_vault_repository.py`. Schema lives in `infrastructure/persistence/database.py`.
 - **Vector index**: `VectorIndex` ABC. Two impls:
-  - `SentenceTransformersIndex` (default, production) — loads a sentence-transformers model lazily, persists embeddings to `{cwd}/.agent-engine/index.pkl`.
+  - `SentenceTransformersIndex` (default, production) — loads a sentence-transformers model lazily, persists embeddings to `{data-dir}/index.pkl`.
   - `InMemoryVectorIndex` (tests and --no-embeddings use) — token-cosine over lowercase word tokens.
 - **Service**: `VaultService.write(kind, title, body, tags=())`, `.search(query, limit=5)`, `.recall(entry_id)`, `.list(limit=100)`, `.delete(entry_id)`, `.count()`.
 - **Tools**: `tools/vault_tools.py` wraps the service as three MCP tools (`vault_write`, `vault_search`, `vault_recall`) and returns an `McpSdkServerConfig` via `build_vault_mcp_server(vault_service)`.
@@ -126,11 +126,12 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 
 ## Config
 
-- Global at `~/.agent-engine/config.yaml`.
-- Project at `{cwd}/.agent-engine/config.yaml`.
-- Precedence: project > global > defaults.
+- Config at `{data-dir}/config.yaml`.
+- Default data-dir: `~/.agent-engine/`. Override with `--data-dir`.
+- Precedence: config file > defaults, with env overrides on top.
 - Env overrides: `AGENT_ENGINE_DISCORD_TOKEN`, `AGENT_ENGINE_DISCORD_CHANNEL_ID`, `AGENT_ENGINE_HTTP_PORT`, `AGENT_ENGINE_LOG_LEVEL`.
 - Config object is immutable (`@dataclass(frozen=True)`).
+- Database and vault index live in `data-dir`. No files are written to `cwd`.
 
 ## Integrations
 
@@ -157,7 +158,7 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 - `agent-engine serve` — start all enabled intakes.
 - `agent-engine run --prompt "..." [--resume-key KEY] [--model ...]`
 - `agent-engine vault search|list|recall`
-- `agent-engine --cwd PATH` sets the project directory (default: `.`).
+- `agent-engine --cwd PATH --data-dir PATH` sets the project directory (default: `.`) and data directory (default: `~/.agent-engine/`).
 
 ## Providers
 
@@ -176,7 +177,7 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 
 ## Lifecycle
 
-`main.run_engine(cwd, disable_discord, disable_http)`:
+`main.run_engine(cwd, data_dir, disable_discord, disable_http)`:
 
 1. `build_engine(cwd)` — load config, configure logging, open SQLite, build vault + runner + resume store + `RunService`.
 2. `_build_intakes()` — instantiate HTTP and Discord intakes per config.

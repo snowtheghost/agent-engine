@@ -15,6 +15,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default=Path.cwd(),
         help="Project directory. Defaults to current working directory.",
     )
+    parser.add_argument(
+        "--data-dir",
+        type=Path,
+        default=None,
+        help="Data directory for config, vault DB, and sessions. Defaults to ~/.agent-engine/.",
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     serve = subparsers.add_parser("serve", help="Start all enabled intakes and block.")
@@ -50,17 +56,19 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-async def _run_serve(cwd: Path, no_discord: bool, no_http: bool) -> int:
+async def _run_serve(cwd: Path, data_dir: Path | None, no_discord: bool, no_http: bool) -> int:
     from agent_engine.main import run_engine
 
-    await run_engine(cwd=cwd, disable_discord=no_discord, disable_http=no_http)
+    await run_engine(cwd=cwd, data_dir=data_dir, disable_discord=no_discord, disable_http=no_http)
     return 0
 
 
-async def _run_prompt(cwd: Path, prompt: str, resume_key: str | None, model: str | None) -> int:
+async def _run_prompt(
+    cwd: Path, data_dir: Path | None, prompt: str, resume_key: str | None, model: str | None
+) -> int:
     from agent_engine.main import build_engine, shutdown_engine
 
-    engine = build_engine(cwd=cwd)
+    engine = build_engine(cwd=cwd, data_dir=data_dir)
     try:
         result = await engine.run_service.dispatch(
             prompt, resume_key=resume_key, model=model
@@ -74,10 +82,10 @@ async def _run_prompt(cwd: Path, prompt: str, resume_key: str | None, model: str
         shutdown_engine(engine)
 
 
-def _run_vault_search(cwd: Path, query: str, limit: int) -> int:
+def _run_vault_search(cwd: Path, data_dir: Path | None, query: str, limit: int) -> int:
     from agent_engine.main import build_engine, shutdown_engine
 
-    engine = build_engine(cwd=cwd)
+    engine = build_engine(cwd=cwd, data_dir=data_dir)
     try:
         hits = engine.vault_service.search(query, limit)
         if not hits:
@@ -95,10 +103,10 @@ def _run_vault_search(cwd: Path, query: str, limit: int) -> int:
         shutdown_engine(engine)
 
 
-def _run_vault_list(cwd: Path, limit: int) -> int:
+def _run_vault_list(cwd: Path, data_dir: Path | None, limit: int) -> int:
     from agent_engine.main import build_engine, shutdown_engine
 
-    engine = build_engine(cwd=cwd)
+    engine = build_engine(cwd=cwd, data_dir=data_dir)
     try:
         entries = engine.vault_service.list(limit)
         if not entries:
@@ -111,10 +119,10 @@ def _run_vault_list(cwd: Path, limit: int) -> int:
         shutdown_engine(engine)
 
 
-def _run_vault_recall(cwd: Path, entry_id: str) -> int:
+def _run_vault_recall(cwd: Path, data_dir: Path | None, entry_id: str) -> int:
     from agent_engine.main import build_engine, shutdown_engine
 
-    engine = build_engine(cwd=cwd)
+    engine = build_engine(cwd=cwd, data_dir=data_dir)
     try:
         entry = engine.vault_service.recall(entry_id)
         if entry is None:
@@ -136,18 +144,19 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
     cwd = args.cwd.resolve()
+    data_dir = args.data_dir.resolve() if args.data_dir else None
 
     if args.command == "serve":
-        return asyncio.run(_run_serve(cwd, args.no_discord, args.no_http))
+        return asyncio.run(_run_serve(cwd, data_dir, args.no_discord, args.no_http))
     if args.command == "run":
-        return asyncio.run(_run_prompt(cwd, args.prompt, args.resume_key, args.model))
+        return asyncio.run(_run_prompt(cwd, data_dir, args.prompt, args.resume_key, args.model))
     if args.command == "vault":
         if args.vault_command == "search":
-            return _run_vault_search(cwd, args.query, args.limit)
+            return _run_vault_search(cwd, data_dir, args.query, args.limit)
         if args.vault_command == "list":
-            return _run_vault_list(cwd, args.limit)
+            return _run_vault_list(cwd, data_dir, args.limit)
         if args.vault_command == "recall":
-            return _run_vault_recall(cwd, args.entry_id)
+            return _run_vault_recall(cwd, data_dir, args.entry_id)
 
     parser.print_help()
     return 1
