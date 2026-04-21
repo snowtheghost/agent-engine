@@ -21,7 +21,7 @@ Every session can write to the vault. Every session can search it semantically. 
 ### Install
 
 ```bash
-git clone https://github.com/<your-org>/agent-engine.git
+git clone git@github.com:snowtheghost/agent-engine.git
 cd agent-engine
 python -m venv .venv
 source .venv/bin/activate

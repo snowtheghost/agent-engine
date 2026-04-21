@@ -7,7 +7,10 @@ from pathlib import Path
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="agent-engine",
-        description="Provider-agnostic runtime for AI agents with per-project persistent knowledge.",
+        description=(
+            "Provider-agnostic runtime for AI agents with"
+            " per-project persistent knowledge."
+        ),
     )
     parser.add_argument(
         "--cwd",
