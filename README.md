@@ -81,7 +81,7 @@ agent-engine --cwd . serve --no-discord --no-http
 
 The vault is a plain directory of markdown files. Point `vault.directory` at any tree — a `knowledge/vault/` folder, an existing `docs/`, a fresh empty directory — and the engine will chunk it (by `## Section` / `### Subsection`), index each chunk with a semantic embedding, and keep the index synced with disk.
 
-- **Source of truth:** files on disk. Edit, delete, move, or commit them from anywhere. The scanner picks up the delta on startup and every write.
+- **Source of truth:** files on disk. Edit, delete, move, or commit them from anywhere. A filesystem watcher keeps the index live; a checksum scan on startup catches anything that changed while the engine was down.
 - **Optional frontmatter:** YAML between `---` fences. `tags:` flow into chunk metadata. Other fields (people, date, etc.) pass through untouched.
 - **Chunks, not entries:** one file usually produces many chunks, one per section. Each chunk is searchable independently. Files smaller than 20 characters of content under a heading are skipped.
 - **Writes are real files:** `vault_write` creates `{slug-of-title}.md` with a title H1 and your content. `subdirectory` routes into a subfolder. Chunk indexing is immediate.

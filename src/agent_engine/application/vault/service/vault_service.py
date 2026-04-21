@@ -89,6 +89,32 @@ class VaultService:
         except (OSError, UnicodeDecodeError):
             return None
 
+    def ingest(self, path: Path) -> int:
+        rel = self._relative_key(path)
+        if rel is None:
+            return 0
+        if not path.is_file():
+            return 0
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            return 0
+        chunks = chunk_markdown(text, rel)
+        self._index.delete_by_file(rel)
+        if chunks:
+            self._index.upsert(chunks)
+        logger.info("vault_ingest", path=rel, chunks=len(chunks))
+        return len(chunks)
+
+    def evict(self, path: Path) -> int:
+        rel = self._relative_key(path)
+        if rel is None:
+            return 0
+        removed = self._index.delete_by_file(rel)
+        if removed:
+            logger.info("vault_evict", path=rel, removed=removed)
+        return removed
+
     def count(self) -> int:
         return self._index.count()
 
@@ -133,6 +159,16 @@ class VaultService:
                 return None
             return as_path
         return (self._directory / file_path).resolve()
+
+    def _relative_key(self, path: Path) -> str | None:
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return None
+        try:
+            return str(resolved.relative_to(self._directory.resolve()))
+        except ValueError:
+            return None
 
 
 def _slugify(title: str) -> str:
