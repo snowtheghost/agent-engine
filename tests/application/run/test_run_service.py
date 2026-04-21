@@ -109,3 +109,41 @@ async def test_clear_resume_removes_handle():
     await service.dispatch("hi", resume_key="k1")
     service.clear_resume("k1")
     assert store.get("k1") is None
+
+
+class TestInterrupt:
+    @pytest.mark.asyncio
+    async def test_interrupt_delegates_to_runner(self) -> None:
+        store = InMemoryResumeStore()
+        runner = FakeRunner()
+        runner._active.add("run-1")
+        service = RunService(runner=runner, resume_handles=store)
+
+        result = await service.interrupt("run-1")
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_interrupt_returns_false_for_unknown_run(self) -> None:
+        store = InMemoryResumeStore()
+        runner = FakeRunner()
+        service = RunService(runner=runner, resume_handles=store)
+
+        result = await service.interrupt("nonexistent")
+        assert result is False
+
+    def test_active_run_ids_delegates_to_runner(self) -> None:
+        store = InMemoryResumeStore()
+        runner = FakeRunner()
+        runner._active.update({"run-1", "run-2"})
+        service = RunService(runner=runner, resume_handles=store)
+
+        assert service.active_run_ids() == {"run-1", "run-2"}
+
+    def test_is_running_delegates_to_runner(self) -> None:
+        store = InMemoryResumeStore()
+        runner = FakeRunner()
+        runner._active.add("run-1")
+        service = RunService(runner=runner, resume_handles=store)
+
+        assert service.is_running("run-1") is True
+        assert service.is_running("run-2") is False
