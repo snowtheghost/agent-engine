@@ -36,13 +36,12 @@ src/agent_engine/
 │   ├── run/model/run.py             # Run
 │   ├── run/model/run_result.py      # RunResult
 │   ├── run/model/resume_handle.py   # ResumeHandle
-│   └── vault/model/entry.py         # VaultEntry, VaultSearchHit
+│   └── vault/chunk.py               # VaultChunk, VaultSearchHit
 ├── application/
 │   ├── run/runner/runner.py         # Runner Protocol
 │   ├── run/service/run_service.py   # RunService
 │   ├── run/service/resume_handle_store.py
-│   ├── vault/repository/vault_repository.py  # VaultRepository ABC
-│   ├── vault/index/vector_index.py  # VectorIndex ABC
+│   ├── vault/index/vault_index.py   # VaultIndex ABC
 │   ├── vault/scanner/vault_scanner.py        # VaultScanner ABC, ScanReport
 │   ├── vault/service/vault_service.py
 │   └── integration/intake.py        # Intake ABC
@@ -63,14 +62,12 @@ src/agent_engine/
 │   │   └── session_rollback.py
 │   └── codex/runner.py              # stub
 ├── infrastructure/
-│   ├── vault/file_vault_repository.py      # markdown file repository
-│   ├── vault/file_vault_scanner.py         # directory scanner + index sync
-│   ├── vault/markdown_frontmatter.py       # YAML frontmatter format/parse
-│   ├── vault/in_memory_vector_index.py     # dev/test default
+│   ├── vault/chunker.py                    # markdown → chunks (by ##/### headings)
+│   ├── vault/file_vault_scanner.py         # directory scanner + chunk index sync
+│   ├── vault/in_memory_vault_index.py      # token-cosine VaultIndex for tests
+│   ├── vault/numpy_vault_index.py          # production VaultIndex adapter over NumpyVectorStore
 │   ├── vault/numpy_vector_store.py         # persistent numpy-backed vector store
-│   ├── vault/persistent_vector_index.py    # VectorIndex adapter over NumpyVectorStore
 │   ├── vault/embedding.py                  # nomic-embed-text-v1.5 with asymmetric prefixing
-│   ├── vault/sentence_transformers_index.py # legacy (unused in production)
 │   ├── persistence/database.py             # sqlite schema (resume handles only)
 │   ├── persistence/sqlite_resume_handle_store.py
 │   └── system/config/config.py             # YAML config loader
@@ -116,27 +113,31 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 
 ## Vault
 
+The vault is a directory of free-form markdown files. Files are the source of truth — written, edited, deleted on disk by any tool. The engine chunks each file and indexes chunks for semantic search.
+
 ### Model
 
-- **Entry shape**: `entry_id` (uuid), `kind` (free-form), `title`, `body`, `tags: tuple[str, ...]`, `created_at` (UTC).
-- **Search hit**: `VaultSearchHit(entry, score, path)`. The `path` is the absolute filesystem path of the backing markdown file.
+- `VaultChunk(chunk_id, file_path, heading, content, tags)`. `file_path` is relative to the vault root. `chunk_id` is a deterministic `md5(file_path:heading:index:content_prefix)`.
+- `VaultSearchHit(chunk, score, path)` where `path` is the absolute filesystem path of the backing file.
 
-### Storage: markdown files
+### Storage
 
-- Each entry is a `.md` file in `config.vault.directory` named `{entry_id}.md`.
-- Frontmatter is YAML between `---` fences with keys `id`, `kind`, `title`, `tags`, `created_at`. The body follows.
-- Markdown files are the source of truth. Deleting a file removes the entry. Editing a file changes the entry on the next scan.
-- `FileVaultRepository` (`infrastructure/vault/file_vault_repository.py`) implements `VaultRepository` against a directory. Writes are atomic via `tempfile + os.replace`.
-- `markdown_frontmatter.format_entry / parse_entry` (`infrastructure/vault/markdown_frontmatter.py`) render and parse the file format.
-- `FileVaultScanner` (`infrastructure/vault/file_vault_scanner.py`) walks the vault directory recursively for `.md` files, indexes entries whose file checksum has changed, and removes index entries whose files have disappeared. Checksums are stored at `{vault.directory}/.vault_checksums.json`.
+- Markdown files live anywhere under `config.vault.directory`. The scanner recurses.
+- Optional YAML frontmatter (`tags`, `people`, `date`, etc.) between `---` fences. Only `tags` currently flows into chunk metadata; other fields pass through untouched on disk.
+- Files are the source of truth. Deleting, editing, moving the file all propagate at the next scan.
+- Hidden paths (any component starting with `.`) are ignored.
 
-### Vector index
+### Chunker
 
-- `VectorIndex` ABC in `application/vault/index/vector_index.py`. Exposes `upsert`, `remove`, `search`, `ids`, `close`.
-- Three implementations:
-  - `PersistentVectorIndex` (default, production) — adapts `NumpyVectorStore` to the `VectorIndex` interface. Delegates to the store for persistence and semantic search.
-  - `InMemoryVectorIndex` (tests and --no-embeddings use) — token-cosine over lowercase word tokens.
-  - `SentenceTransformersIndex` (legacy) — pickle-based. Retained for backward compatibility but not used in production.
+- `chunker.chunk_markdown(text, file_path)` splits by H2 (`##`) and H3 (`###`) headings. Sections shorter than 20 characters are dropped. Files without headings produce one chunk over the whole body.
+- Each chunk carries file tags from frontmatter plus the nearest heading.
+
+### VaultIndex
+
+- `VaultIndex` ABC in `application/vault/index/vault_index.py`. Operations: `upsert(chunks)`, `delete_by_file(file_path)`, `search(query, limit, file_filter=None)`, `file_paths()`, `count()`, `close()`.
+- Two implementations:
+  - `NumpyVaultIndex` (production) — adapts `NumpyVectorStore` to the chunk interface. Persistence + embeddings.
+  - `InMemoryVaultIndex` (tests, dev) — token-cosine over lowercase word tokens. Stateless.
 
 ### NumpyVectorStore
 
@@ -157,28 +158,26 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 ### Store location
 
 - The persistent store lives at `{config.data_dir}/.store/`. Follows the `--data-dir` pattern from the config.
-- `PersistentVectorIndex` wraps `NumpyVectorStore` and adapts it to the `VectorIndex` ABC used by the scanner and service.
 
 ### Scanner
 
-- `VaultScanner` ABC in `application/vault/scanner/vault_scanner.py`. `scan(force=False) -> ScanReport`.
-- `ScanReport(indexed, skipped_unchanged, removed, total)` summarises one pass.
-- `FileVaultScanner` is invoked once at engine startup from `build_engine`. It performs delta indexing via file checksums.
-- Writes through the service are indexed immediately. The scanner is the authority for drift between files and index (files edited directly on disk, files deleted, files added out of band).
+- `VaultScanner` ABC in `application/vault/scanner/vault_scanner.py`. `scan(force=False) -> ScanReport(indexed_files, skipped_unchanged, removed_files, total_files, total_chunks)`.
+- `FileVaultScanner` walks the vault directory recursively for `.md` files. Per file: checksum (MD5) vs previous; if changed, delete existing chunks for that file, chunk, upsert. Deleted files have their chunks removed. Checksums persisted at `{vault.directory}/.vault_checksums.json`.
+- Invoked once at engine startup from `build_engine`. Handles files edited directly on disk.
 
 ### Service
 
-- `VaultService.write(kind, title, body, tags=())` → writes markdown file via repository, upserts vector entry, returns `VaultEntry`.
-- `VaultService.search(query, limit=5)` → asks index for top-k ids, hydrates entries via repository, returns `list[VaultSearchHit]` with paths.
-- `VaultService.recall(entry_id)` → reads the markdown file.
-- `VaultService.list(limit=100)` → returns recent entries by `created_at`.
-- `VaultService.delete(entry_id)` → unlinks the file and removes the index entry.
-- `VaultService.count()` → number of vault files.
+- `VaultService.write(title, content, tags=(), subdirectory=None)` → writes a slugified markdown file with frontmatter and an H1, chunks and upserts immediately, returns the written `Path`.
+- `VaultService.search(query, limit=5, file_filter=None)` → returns `list[VaultSearchHit]`.
+- `VaultService.recall(file_path)` → returns the full markdown body or `None`. Accepts either a vault-relative path or an absolute path under the vault root.
+- `VaultService.files()` → `set[str]` of relative paths currently indexed.
+- `VaultService.count()` → chunk count.
+- `VaultService.rescan(force=False)` → run the scanner.
 
 ### Tools
 
 - `tools/vault_tools.py` wraps the service as three MCP tools (`vault_write`, `vault_search`, `vault_recall`) and returns an `McpSdkServerConfig` via `build_vault_mcp_server(vault_service)`.
-- `vault_search` output includes the backing file path for each hit.
+- `vault_search` output includes the file path, heading, and score for each chunk.
 
 ## Resume handles
 
@@ -203,10 +202,10 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 - `POST /runs` — `{prompt, resume_key?, model?}` → `RunResult` (flattened). Dispatches through `RunService`.
 - `POST /runs/{run_id}/cancel` — interrupts a running run.
 - `GET /runs` — active run ids.
-- `GET /health` — status + active run count + vault entry count.
-- `GET /vault/search?q=...&limit=...` — top-k hits, each with its backing file `path`.
-- `GET /vault/entries/{id}` — full entry.
-- `POST /vault/entries` — create an entry directly.
+- `GET /health` — status + active run count + total chunk count.
+- `GET /vault/search?q=...&limit=...&file=...` — top-k chunks, each with file path, heading, score.
+- `GET /vault/recall?path=...` — full markdown body of a vault file.
+- `POST /vault/entries` — write a new markdown file `{title, content, tags?, subdirectory?}`.
 - Served by Uvicorn on `http.host:http.port` (default `127.0.0.1:8938`).
 
 ### Discord
@@ -220,7 +219,7 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 
 - `agent-engine serve` — start all enabled intakes.
 - `agent-engine run --prompt "..." [--resume-key KEY] [--model ...]`
-- `agent-engine vault search|list|recall`
+- `agent-engine vault search QUERY [--limit N] [--file PATH]` / `agent-engine vault list` / `agent-engine vault recall PATH`
 - `agent-engine --cwd PATH --data-dir PATH` sets the project directory (default: `.`) and data directory (default: `~/.agent-engine/`).
 
 ## Providers

@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import structlog
 
@@ -44,7 +44,7 @@ class RunService:
             provider=self._runner.provider_name,
             model=model,
             prompt_preview=prompt[:120],
-            started_at=datetime.now(timezone.utc).isoformat(),
+            started_at=datetime.now(UTC).isoformat(),
         )
 
         if resume_key is not None:

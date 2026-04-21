@@ -83,6 +83,6 @@ async def ensure_token_fresh() -> bool:
         )
         return remaining > 0
 
-    except (json.JSONDecodeError, OSError, asyncio.TimeoutError) as exc:
+    except (TimeoutError, json.JSONDecodeError, OSError) as exc:
         logger.warning("token_check_error", error=str(exc))
         return True

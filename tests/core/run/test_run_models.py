@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from agent_engine.core.run.model.resume_handle import ResumeHandle
 from agent_engine.core.run.model.run import Run
@@ -22,7 +22,7 @@ def test_run_is_hashable():
         model="sonnet",
         resume_handle=None,
         resume_key=None,
-        created_at=datetime.now(timezone.utc),
+        created_at=datetime.now(UTC),
     )
     assert hash(run) == hash(run)
 

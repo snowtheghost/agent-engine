@@ -4,10 +4,11 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class ScanReport:
-    indexed: int
+    indexed_files: int
     skipped_unchanged: int
-    removed: int
-    total: int
+    removed_files: int
+    total_files: int
+    total_chunks: int
 
 
 class VaultScanner(ABC):

@@ -36,10 +36,10 @@ class VaultSearchResponse(BaseModel):
 
 
 class VaultEntryPayload(BaseModel):
-    kind: str
     title: str
-    body: str
+    content: str
     tags: list[str] = Field(default_factory=list)
+    subdirectory: str | None = None
 
 
 def build_app(run_service: RunService, vault: VaultService) -> FastAPI:
@@ -50,7 +50,7 @@ def build_app(run_service: RunService, vault: VaultService) -> FastAPI:
         return {
             "status": "ok",
             "active_runs": sorted(run_service.active_run_ids()),
-            "vault_entries": vault.count(),
+            "vault_chunks": vault.count(),
         }
 
     @app.post("/runs", response_model=DispatchResponse)
@@ -82,18 +82,17 @@ def build_app(run_service: RunService, vault: VaultService) -> FastAPI:
         return {"active": sorted(run_service.active_run_ids())}
 
     @app.get("/vault/search", response_model=VaultSearchResponse)
-    async def vault_search(q: str, limit: int = 5) -> VaultSearchResponse:
-        hits = vault.search(q, limit)
+    async def vault_search(q: str, limit: int = 5, file: str | None = None) -> VaultSearchResponse:
+        hits = vault.search(q, limit, file_filter=file)
         return VaultSearchResponse(
             query=q,
             results=[
                 {
-                    "entry_id": hit.entry.entry_id,
-                    "kind": hit.entry.kind,
-                    "title": hit.entry.title,
-                    "tags": list(hit.entry.tags),
-                    "body": hit.entry.body,
-                    "created_at": hit.entry.created_at.isoformat(),
+                    "chunk_id": hit.chunk.chunk_id,
+                    "file_path": hit.chunk.file_path,
+                    "heading": hit.chunk.heading,
+                    "content": hit.chunk.content,
+                    "tags": list(hit.chunk.tags),
                     "score": hit.score,
                     "path": str(hit.path),
                 }
@@ -101,29 +100,22 @@ def build_app(run_service: RunService, vault: VaultService) -> FastAPI:
             ],
         )
 
-    @app.get("/vault/entries/{entry_id}")
-    async def vault_recall(entry_id: str) -> dict:
-        entry = vault.recall(entry_id)
-        if entry is None:
-            raise HTTPException(status_code=404, detail="entry not found")
-        return {
-            "entry_id": entry.entry_id,
-            "kind": entry.kind,
-            "title": entry.title,
-            "tags": list(entry.tags),
-            "body": entry.body,
-            "created_at": entry.created_at.isoformat(),
-        }
+    @app.get("/vault/recall")
+    async def vault_recall(path: str) -> dict:
+        body = vault.recall(path)
+        if body is None:
+            raise HTTPException(status_code=404, detail="file not found")
+        return {"path": path, "body": body}
 
     @app.post("/vault/entries")
     async def vault_create(payload: VaultEntryPayload) -> dict:
-        entry = vault.write(
-            kind=payload.kind,
+        written = vault.write(
             title=payload.title,
-            body=payload.body,
+            content=payload.content,
             tags=tuple(payload.tags),
+            subdirectory=payload.subdirectory,
         )
-        return {"entry_id": entry.entry_id}
+        return {"path": str(written)}
 
     return app
 
@@ -164,7 +156,7 @@ class HttpIntake(Intake):
         if self._task is not None:
             try:
                 await asyncio.wait_for(self._task, timeout=10)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("http_intake_stop_timeout")
                 self._task.cancel()
         logger.info("http_intake_stopped")

@@ -42,7 +42,7 @@ def _get_raw_message_stream(client: ClaudeSDKClient) -> Any:
     return query.receive_messages()
 
 
-async def resilient_receive(client: ClaudeSDKClient) -> AsyncGenerator[Message, None]:
+async def resilient_receive(client: ClaudeSDKClient) -> AsyncGenerator[Message]:
     if not _SDK_INTERNALS_AVAILABLE or _sdk_parse_message is None:
         raise RuntimeError(
             "claude_agent_sdk internal APIs unavailable. SDK version may be incompatible."

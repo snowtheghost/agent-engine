@@ -6,8 +6,8 @@ from agent_engine.application.run.service.run_service import RunService
 from agent_engine.application.vault.service.vault_service import VaultService
 from agent_engine.core.run.model.resume_handle import ResumeHandle
 from agent_engine.core.run.model.run_result import RunResult
-from agent_engine.infrastructure.vault.file_vault_repository import FileVaultRepository
-from agent_engine.infrastructure.vault.in_memory_vector_index import InMemoryVectorIndex
+from agent_engine.infrastructure.vault.file_vault_scanner import FileVaultScanner
+from agent_engine.infrastructure.vault.in_memory_vault_index import InMemoryVaultIndex
 from agent_engine.integrations.http.server import build_app
 
 
@@ -56,10 +56,11 @@ class StubRunner:
 
 @pytest.fixture()
 def client(tmp_path):
-    vault = VaultService(
-        repository=FileVaultRepository(tmp_path / "vault"),
-        index=InMemoryVectorIndex(),
-    )
+    directory = tmp_path / "vault"
+    directory.mkdir()
+    index = InMemoryVaultIndex()
+    scanner = FileVaultScanner(directory=directory, index=index)
+    vault = VaultService(directory=directory, index=index, scanner=scanner)
     run_service = RunService(runner=StubRunner(), resume_handles=InMemoryStore())
     app = build_app(run_service, vault)
     return TestClient(app)
@@ -71,7 +72,7 @@ def test_health(client):
     body = resp.json()
     assert body["status"] == "ok"
     assert body["active_runs"] == []
-    assert body["vault_entries"] == 0
+    assert body["vault_chunks"] == 0
 
 
 def test_post_runs_returns_summary(client):
@@ -87,25 +88,29 @@ def test_post_runs_returns_summary(client):
 def test_vault_roundtrip(client):
     create = client.post(
         "/vault/entries",
-        json={"kind": "note", "title": "OAuth", "body": "PKCE flow", "tags": ["auth"]},
+        json={
+            "title": "OAuth",
+            "content": "PKCE flow details long enough to chunk.",
+            "tags": ["auth"],
+        },
     )
     assert create.status_code == 200
-    entry_id = create.json()["entry_id"]
-
-    recall = client.get(f"/vault/entries/{entry_id}")
-    assert recall.status_code == 200
-    assert recall.json()["title"] == "OAuth"
+    created_path = create.json()["path"]
+    assert created_path.endswith(".md")
 
     search = client.get("/vault/search", params={"q": "PKCE"})
     assert search.status_code == 200
     body = search.json()
     assert body["results"]
-    assert body["results"][0]["entry_id"] == entry_id
-    assert body["results"][0]["path"].endswith(f"{entry_id}.md")
+    assert body["results"][0]["file_path"].endswith(".md")
+
+    recall = client.get("/vault/recall", params={"path": body["results"][0]["file_path"]})
+    assert recall.status_code == 200
+    assert "OAuth" in recall.json()["body"]
 
 
 def test_vault_recall_not_found(client):
-    resp = client.get("/vault/entries/missing")
+    resp = client.get("/vault/recall", params={"path": "missing.md"})
     assert resp.status_code == 404
 
 
@@ -158,10 +163,11 @@ class TrackableRunner:
 
 @pytest.fixture()
 def trackable_client(tmp_path):
-    vault = VaultService(
-        repository=FileVaultRepository(tmp_path / "vault"),
-        index=InMemoryVectorIndex(),
-    )
+    directory = tmp_path / "vault"
+    directory.mkdir()
+    index = InMemoryVaultIndex()
+    scanner = FileVaultScanner(directory=directory, index=index)
+    vault = VaultService(directory=directory, index=index, scanner=scanner)
     runner = TrackableRunner()
     run_service = RunService(runner=runner, resume_handles=InMemoryStore())
     app = build_app(run_service, vault)

@@ -57,8 +57,11 @@ agent-engine --cwd . run --prompt "Explain the auth flow"
 # Search the vault
 agent-engine --cwd . vault search "auth flow"
 
-# List recent vault entries
+# List indexed vault file paths
 agent-engine --cwd . vault list
+
+# Read a vault file
+agent-engine --cwd . vault recall Architecture/auth.md
 
 # HTTP API
 curl http://127.0.0.1:8938/health
@@ -76,13 +79,20 @@ agent-engine --cwd . serve --no-discord --no-http
 
 ## Vault
 
-`VaultEntry`: `id`, `kind` (free-form category: decision / pattern / gotcha / api-note / whatever), `title`, `body`, `tags`, `created_at`.
+The vault is a plain directory of markdown files. Point `vault.directory` at any tree — a `knowledge/vault/` folder, an existing `docs/`, a fresh empty directory — and the engine will chunk it (by `## Section` / `### Subsection`), index each chunk with a semantic embedding, and keep the index synced with disk.
 
-Storage is plain markdown. Every entry is a `{id}.md` file under the vault directory (`~/.agent-engine/` by default, or `vault.directory` in config). The file starts with a YAML frontmatter block (`id`, `kind`, `title`, `tags`, `created_at`) followed by the body. Markdown files are the source of truth — edit them, delete them, move them with `git mv`, and the engine picks up the change on the next scan.
+- **Source of truth:** files on disk. Edit, delete, move, or commit them from anywhere. The scanner picks up the delta on startup and every write.
+- **Optional frontmatter:** YAML between `---` fences. `tags:` flow into chunk metadata. Other fields (people, date, etc.) pass through untouched.
+- **Chunks, not entries:** one file usually produces many chunks, one per section. Each chunk is searchable independently. Files smaller than 20 characters of content under a heading are skipped.
+- **Writes are real files:** `vault_write` creates `{slug-of-title}.md` with a title H1 and your content. `subdirectory` routes into a subfolder. Chunk indexing is immediate.
 
-The agent writes entries through an MCP tool `vault_write`. It searches through `vault_search`, recalls by id through `vault_recall`. These are exposed to Claude Code as the `mcp__vault__*` tools. Any future provider wraps them the same way.
+MCP tools exposed to the provider:
 
-On startup, a scanner walks the vault directory and syncs the vector index with the files on disk: new files get indexed, changed files get re-indexed (via MD5 checksum stored in `.vault_checksums.json`), and deleted files get purged. The sentence-transformers embedding cache lives at `{vault.directory}/index.pkl`. Commit the markdown if you want shared team memory, gitignore it if private.
+- `vault_write(title, content, tags?, subdirectory?)` — create a new markdown file.
+- `vault_search(query, limit?, file?)` — semantic search over chunks. Returns file path, heading, preview, score.
+- `vault_recall(path)` — full markdown body of a vault file.
+
+Index storage (embeddings + metadata) lives at `{data_dir}/.store/`. Checksums at `{vault.directory}/.vault_checksums.json`. Commit the markdown; gitignore the store.
 
 ## Adding a provider
 

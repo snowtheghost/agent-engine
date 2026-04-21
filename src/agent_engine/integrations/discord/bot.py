@@ -53,7 +53,7 @@ class DiscordIntake(Intake):
         if self._task is not None:
             try:
                 await asyncio.wait_for(self._task, timeout=10)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 logger.warning("discord_intake_stop_timeout")
                 self._task.cancel()
         logger.info("discord_intake_stopped")

@@ -1,7 +1,6 @@
 import sqlite3
 from pathlib import Path
 
-
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS resume_handles (
     resume_key TEXT PRIMARY KEY,

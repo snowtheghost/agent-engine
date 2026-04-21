@@ -10,7 +10,6 @@ import pytest
 from agent_engine.core.run.model.run_result import RunResult
 from agent_engine.integrations.discord.bot import DiscordIntake
 
-
 CONFIGURED_CHANNEL_ID = 1000
 OTHER_CHANNEL_ID = 2000
 MESSAGE_ID = 42
