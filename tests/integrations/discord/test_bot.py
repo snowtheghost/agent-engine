@@ -63,6 +63,18 @@ def _run_service_returning(text: str = "done") -> MagicMock:
             resume_handle=None,
         )
     )
+    service.submit_message = AsyncMock(
+        return_value=RunResult(
+            run_id="r1",
+            success=True,
+            summary=text,
+            error=None,
+            duration_ms=1,
+            cost_usd=0.0,
+            turns=1,
+            resume_handle=None,
+        )
+    )
     return service
 
 
@@ -195,3 +207,48 @@ async def test_ensure_thread_reraises_non_160004_http_errors() -> None:
 
     with pytest.raises(discord.HTTPException):
         await intake._ensure_thread(channel, message)
+
+
+class FakeUser:
+    def __init__(self, display_name: str = "alice") -> None:
+        self.bot = False
+        self.display_name = display_name
+        self.id = 7
+
+
+@pytest.mark.asyncio
+async def test_submit_and_reply_uses_submit_message() -> None:
+    service = _run_service_returning("hi back")
+    intake = _build_intake(run_service=service)
+    thread = _thread(parent_id=CONFIGURED_CHANNEL_ID, thread_id=321)
+
+    await intake._submit_and_reply(
+        thread,
+        author="alice",
+        content="ping",
+        resume_key="321",
+    )
+
+    service.submit_message.assert_awaited_once_with(
+        resume_key="321",
+        author="alice",
+        content="ping",
+    )
+    thread.send.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_submit_and_reply_sends_nothing_when_none_returned() -> None:
+    service = _run_service_returning()
+    service.submit_message = AsyncMock(return_value=None)
+    intake = _build_intake(run_service=service)
+    thread = _thread(parent_id=CONFIGURED_CHANNEL_ID, thread_id=321)
+
+    await intake._submit_and_reply(
+        thread,
+        author="alice",
+        content="ping",
+        resume_key="321",
+    )
+
+    thread.send.assert_not_called()
