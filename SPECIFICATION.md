@@ -130,9 +130,31 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 ### Vector index
 
 - `VectorIndex` ABC in `application/vault/index/vector_index.py`. Exposes `upsert`, `remove`, `search`, `ids`, `close`.
-- Two implementations:
-  - `SentenceTransformersIndex` (default, production) — loads a sentence-transformers model lazily, persists embeddings to `{data-dir}/index.pkl`.
+- Three implementations:
+  - `PersistentVectorIndex` (default, production) — adapts `NumpyVectorStore` to the `VectorIndex` interface. Delegates to the store for persistence and semantic search.
   - `InMemoryVectorIndex` (tests and --no-embeddings use) — token-cosine over lowercase word tokens.
+  - `SentenceTransformersIndex` (legacy) — pickle-based. Retained for backward compatibility but not used in production.
+
+### NumpyVectorStore
+
+- `NumpyVectorStore` in `infrastructure/vault/numpy_vector_store.py`. Persistent embedding index backed by numpy arrays.
+- Stores embeddings as `{store_dir}/{name}_embeddings.npy`, metadata as `{name}_index.json`.
+- Operations: batch `upsert(ids, documents, metadatas)`, batch `delete(ids)`, `get(ids?, where?)`, `query(query_texts, n_results, where)`, `reset()`.
+- Thread-safe via `Lock`. Loads from disk on init, saves after every mutation.
+- Supports metadata filtering with `$and`, `$or`, `$contains`, `$ne`.
+- Query uses cosine similarity (dot product on L2-normalized embeddings).
+
+### Embedding
+
+- `embedding.py` in `infrastructure/vault/embedding.py`. Uses `sentence_transformers` with `nomic-ai/nomic-embed-text-v1.5` (768-dim).
+- Runs on CPU. Lazy-loads the model on first use.
+- Asymmetric prefixing: `search_document:` for indexing, `search_query:` for queries.
+- `embed_documents(texts)` and `embed_queries(texts)` are the public functions.
+
+### Store location
+
+- The persistent store lives at `{config.data_dir}/.store/`. Follows the `--data-dir` pattern from the config.
+- `PersistentVectorIndex` wraps `NumpyVectorStore` and adapts it to the `VectorIndex` ABC used by the scanner and service.
 
 ### Scanner
 
@@ -169,7 +191,7 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 - Precedence: config file > defaults, with env overrides on top.
 - Env overrides: `AGENT_ENGINE_DISCORD_TOKEN`, `AGENT_ENGINE_DISCORD_CHANNEL_ID`, `AGENT_ENGINE_HTTP_PORT`, `AGENT_ENGINE_LOG_LEVEL`.
 - Config object is immutable (`@dataclass(frozen=True)`).
-- Database, vault directory, and vector index all live under `data-dir` by default. No files are written to `cwd`.
+- Database, vault directory, and vector store all live under `data-dir` by default. No files are written to `cwd`.
 
 ## Integrations
 
@@ -217,7 +239,7 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 
 `main.run_engine(cwd, data_dir, disable_discord, disable_http)`:
 
-1. `build_engine(cwd)` — load config, configure logging, open SQLite, build vault service + scanner (run one scan to index any out-of-band files), runner, resume store, `RunService`.
+1. `build_engine(cwd)` — load config, configure logging, open SQLite, build vault service + scanner (run one scan to index any out-of-band files), runner, resume store, `RunService`. Vault uses `NumpyVectorStore` persisted to `{data-dir}/.store/` with `nomic-embed-text-v1.5` embeddings.
 2. `_build_intakes()` — instantiate HTTP and Discord intakes per config.
 3. Start each intake sequentially. Wait on `stop_event` (SIGINT/SIGTERM).
 4. On shutdown: stop intakes in reverse order, close SQLite.
