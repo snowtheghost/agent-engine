@@ -74,7 +74,8 @@ src/agent_engine/
 │   ├── vault/embedding.py                  # nomic-embed-text-v1.5 with asymmetric prefixing
 │   ├── persistence/database.py             # sqlite schema (resume handles only)
 │   ├── persistence/sqlite_resume_handle_store.py
-│   └── system/config/config.py             # YAML config loader
+│   ├── system/config/config.py             # YAML config loader
+│   └── system/logging/logging.py           # structlog + stdlib logging setup
 └── tools/
     └── vault_tools.py               # vault_write / vault_search / vault_recall
 ```
