@@ -14,7 +14,7 @@ def test_load_config_uses_defaults(tmp_path, monkeypatch):
     assert config.cwd == project.resolve()
     assert config.default_provider == "claude"
     assert config.providers.claude is not None
-    assert config.providers.claude.model == "opus"
+    assert config.providers.claude.model == "opus[1m]"
     assert config.providers.claude.effort == "max"
     assert config.http.port == 8938
     assert config.discord.token is None

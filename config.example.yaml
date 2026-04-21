@@ -1,6 +1,6 @@
 providers:
   claude:
-    model: opus
+    model: opus[1m]
     effort: max
 
 default_provider: claude

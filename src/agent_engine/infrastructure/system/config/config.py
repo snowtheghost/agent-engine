@@ -71,7 +71,7 @@ class EngineConfig:
 _DEFAULTS: dict[str, Any] = {
     "providers": {
         "claude": {
-            "model": "opus",
+            "model": "opus[1m]",
             "effort": "max",
         },
     },
