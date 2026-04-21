@@ -10,8 +10,8 @@ Point it at a directory. You get an agent that knows your project and remembers 
 Integrations (Discord, HTTP, CLI)  →  Engine Core  →  Providers (Claude Code, Codex, ...)
 ```
 
-- **Integrations** translate their native protocol into `RunService.dispatch()`.
-- **Core** owns runs, resume handles, and the vault.
+- **Integrations** translate their native protocol into `RunService.submit_message()` (durable conversations) or `RunService.dispatch()` (one-shot prompts).
+- **Core** owns runs, resume handles, durable threads, and the vault.
 - **Providers** execute one agent turn and return a `RunResult`.
 
 Every session can write to the vault. Every session can search it semantically. The vault lives under `.agent-engine/` in the target directory and travels with the project.
@@ -77,6 +77,12 @@ curl 'http://127.0.0.1:8938/vault/search?q=auth'
 agent-engine --cwd . serve --no-discord --no-http
 ```
 
+### Discord
+
+- Own bot token. Set `AGENT_ENGINE_DISCORD_TOKEN` / `AGENT_ENGINE_DISCORD_CHANNEL_ID`.
+- New message in the target channel creates a Discord thread and dispatches. Messages in an existing thread dispatch with `resume_key = thread.id`.
+- Messages sent during an active run are appended to the durable thread and replayed as a single combined prompt on the next run (see [Threads](#threads)).
+
 ## Vault
 
 The vault is a plain directory of markdown files. Point `vault.directory` at any tree — a `knowledge/vault/` folder, an existing `docs/`, a fresh empty directory — and the engine will chunk it (by `## Section` / `### Subsection`), index each chunk with a semantic embedding, and keep the index synced with disk.
@@ -100,6 +106,35 @@ Skills bundled with the engine (installed into `{cwd}/.claude/skills/` at startu
 Write your own skills at `{cwd}/.claude/skills/{name}/SKILL.md`. Bundled skills are refreshed on every engine startup if their content changes.
 
 Index storage (embeddings + metadata) lives at `{data_dir}/.store/`. Checksums at `{vault.directory}/.vault_checksums.json`. Commit the markdown; gitignore the store.
+
+## Threads
+
+Every durable conversation is a `Thread` keyed on `resume_key`. The append-only entry log *is* the inbound message queue — `thread.entries[read_cursor:]` filtered by non-agent authors is exactly the pending work to drain, and it survives restart and is recallable.
+
+- **Storage:** one `{data_dir}/threads/{slug}.jsonl` per thread. One JSON record per line. Corrupt lines are skipped with a warning on load.
+- **Cursor:** advanced only by `ThreadService.acknowledge` after a run logs its reply, so an interrupted run is safe to replay. Persisted in the SQLite `thread_cursors` table next to resume handles.
+- **Agent author:** replies logged by `ThreadService.log_reply` carry `author="agent"` and are filtered from the next pending batch so the agent never re-reads its own voice.
+- **Combined prompt:** if more than one unread non-agent entry is pending, the drainer sends them as one prompt starting with `"[Queued messages while you were working:]"` and a blank-line-separated block per entry. Single-entry prompts are a plain `[From: <author>]\n\n<content>` block.
+
+HTTP:
+
+```
+POST /threads/{resume_key}/messages   # {author, content} → RunResult or null if queued
+GET  /threads                         # {threads: [{resume_key, entry_count, last_timestamp}]}
+GET  /threads/{resume_key}            # full thread with entries and attachments
+```
+
+CLI:
+
+```
+agent-engine thread list [--limit N]
+agent-engine thread recall RESUME_KEY
+```
+
+MCP tools exposed to the provider:
+
+- `thread_recall(resume_key)` — full transcript.
+- `thread_list(limit?)` — resume_keys, most-recently-updated first.
 
 ## Adding a provider
 

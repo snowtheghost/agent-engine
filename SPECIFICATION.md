@@ -19,8 +19,8 @@ Agent Engine is a provider-agnostic, integration-agnostic runtime for AI agents.
 Integrations → Core → Providers
 ```
 
-- **Integrations** receive requests in native protocols (Discord messages, HTTP requests, CLI args). They translate to `RunService.dispatch(prompt, resume_key, model)` and translate `RunResult` back to native output.
-- **Core** (application layer) owns run dispatch, resume-handle persistence, vault write/search/recall.
+- **Integrations** receive requests in native protocols (Discord messages, HTTP requests, CLI args). They translate to `RunService.submit_message(resume_key, author, content)` (for durable conversational sources like Discord) or `RunService.dispatch(prompt, resume_key?, model?)` (for one-shot HTTP/CLI callers) and translate `RunResult` back to native output.
+- **Core** (application layer) owns run dispatch, resume-handle persistence, durable thread storage, vault write/search/recall.
 - **Providers** (infrastructure: `providers/<name>/`) implement `Runner`. They execute an agent turn and return a `RunResult`.
 
 Integrations never import providers. Providers never import integrations. Core mediates both through Protocols/ABCs.
@@ -36,11 +36,15 @@ src/agent_engine/
 │   ├── run/model/run.py             # Run
 │   ├── run/model/run_result.py      # RunResult
 │   ├── run/model/resume_handle.py   # ResumeHandle
+│   ├── thread/model/thread.py       # AttachmentMetadata, ThreadEntry, Thread
 │   └── vault/chunk.py               # VaultChunk, VaultSearchHit
 ├── application/
 │   ├── run/runner/runner.py         # Runner Protocol
 │   ├── run/service/run_service.py   # RunService
 │   ├── run/service/resume_handle_store.py
+│   ├── thread/repository/thread_repository.py    # ThreadRepository ABC
+│   ├── thread/repository/thread_cursor_store.py  # ThreadCursorStore ABC
+│   ├── thread/service/thread_service.py          # ThreadService
 │   ├── vault/index/vault_index.py   # VaultIndex ABC
 │   ├── vault/scanner/vault_scanner.py        # VaultScanner ABC, ScanReport
 │   ├── vault/service/vault_service.py
@@ -66,17 +70,20 @@ src/agent_engine/
 │   │   └── session_rollback.py
 │   └── codex/runner.py              # stub
 ├── infrastructure/
+│   ├── thread/persistence/jsonl_thread_repository.py   # append-only JSONL thread store
 │   ├── vault/chunker.py                    # markdown → chunks (by ##/### headings)
 │   ├── vault/file_vault_scanner.py         # directory scanner + chunk index sync
 │   ├── vault/in_memory_vault_index.py      # token-cosine VaultIndex for tests
 │   ├── vault/numpy_vault_index.py          # production VaultIndex adapter over NumpyVectorStore
 │   ├── vault/numpy_vector_store.py         # persistent numpy-backed vector store
 │   ├── vault/embedding.py                  # nomic-embed-text-v1.5 with asymmetric prefixing
-│   ├── persistence/database.py             # sqlite schema (resume handles only)
+│   ├── persistence/database.py             # sqlite schema (resume handles + thread cursors)
 │   ├── persistence/sqlite_resume_handle_store.py
+│   ├── persistence/sqlite_thread_cursor_store.py       # SQLite ThreadCursorStore
 │   ├── system/config/config.py             # YAML config loader
 │   └── system/logging/logging.py           # structlog + stdlib logging setup
 └── tools/
+    ├── thread_tools.py              # thread_recall / thread_list
     └── vault_tools.py               # vault_write / vault_search / vault_recall
 ```
 
@@ -195,6 +202,7 @@ The vault is a directory of free-form markdown files. Files are the source of tr
 
 - `tools/vault_tools.py` wraps the service as three MCP tools (`vault_write`, `vault_search`, `vault_recall`) and returns an `McpSdkServerConfig` via `build_vault_mcp_server(vault_service)`.
 - `vault_search` output includes the file path, heading, and score for each chunk.
+- `tools/thread_tools.py` wraps `ThreadService` as two MCP tools (`thread_recall`, `thread_list`) and returns an `McpSdkServerConfig` via `build_thread_mcp_server(thread_service)`. Registered alongside the vault server by `main._build_runner`.
 
 ### Skills
 
@@ -213,8 +221,40 @@ Packaging: `pyproject.toml` includes `tool.setuptools.package-data = { "agent_en
 ## Resume handles
 
 - `ResumeHandle(provider: str, session_id: str)`.
-- `ResumeHandleStore` ABC persists `resume_key → ResumeHandle`. SQLite impl keys on `resume_key` in the `resume_handles` table. SQLite is used only for resume handles; vault entries live as files.
+- `ResumeHandleStore` ABC persists `resume_key → ResumeHandle`. SQLite impl keys on `resume_key` in the `resume_handles` table. SQLite is used only for resume handles and thread cursors; vault entries and thread entries live as files.
 - Integrations supply a stable `resume_key` per logical conversation (e.g. Discord thread id). `RunService` fetches the matching handle, passes it to the runner, and persists the runner's returned handle.
+
+## Threads
+
+Durable per-conversation history, keyed on `resume_key`. Persistence of entries matches the vault pattern (files on disk, one per thread); the read cursor lives in SQLite for fast upsert.
+
+### Model
+
+- `AttachmentMetadata(path, filename, content_type, size, description)` — frozen. `description` carries optional vision text.
+- `ThreadEntry(author, content, attachments, timestamp)`.
+- `Thread(resume_key, entries, read_cursor)` with `append(entry)` and `unread_from(cursor) -> list[ThreadEntry]`.
+- `AGENT_AUTHOR = "agent"` is the reserved author string for replies written by `ThreadService.log_reply`. Only entries whose author is not `AGENT_AUTHOR` count as pending prompts.
+
+### Persistence layout
+
+- One `{data_dir}/threads/{slug}.jsonl` per thread. Slug is `resume_key` with anything outside `[A-Za-z0-9_-]` replaced by `_`.
+- Append-only, one JSON record per line: `{author, content, timestamp, attachments?}`. On load, corrupt lines are skipped with a structlog warning.
+- Thread read cursor stored in SQLite table `thread_cursors(resume_key TEXT PRIMARY KEY, cursor INTEGER, updated_at TEXT)` via `SqliteThreadCursorStore`. Cursor advances only on `acknowledge`, never on read.
+
+### Service
+
+- `ThreadService.handle_message(resume_key, entry, interrupt=True) -> str | None` — appends and returns the next pending prompt string (or `None` if no pending non-agent entries remain).
+- `ThreadService.log_reply(resume_key, content)` — appends a `ThreadEntry(author="agent", ...)` with the current timestamp.
+- `ThreadService.acknowledge(resume_key, cursor)` — advances the read cursor.
+- `ThreadService.get_pending_prompts(resume_key) -> tuple[str, int] | None` — returns `(combined_prompt, new_cursor)` for all unread non-agent entries. New cursor is `len(entries)` at call time.
+- `ThreadService.get_thread(resume_key) -> Thread | None`.
+- `ThreadService.list_threads(limit=50, offset=0) -> list[str]` — resume_keys most-recently-updated first.
+- Single-entry format mirrors the airy-engine `_entry_to_prompt` output: `"[From: <author>]\n\n<content>"` with an optional `[Attachments:]` block.
+- Multi-entry format is prefixed with `"[Queued messages while you were working:]\n"` followed by blank-line-separated entry blocks.
+
+### Integrations
+
+See below under `## Integrations` and `## Interrupt flow`.
 
 ## Config
 
@@ -230,9 +270,12 @@ Packaging: `pyproject.toml` includes `tool.setuptools.package-data = { "agent_en
 
 ### HTTP
 
-- `POST /runs` — `{prompt, resume_key?, model?}` → `RunResult` (flattened). Dispatches through `RunService`.
+- `POST /runs` — `{prompt, resume_key?, model?}` → `RunResult` (flattened) or `null` if queued. Routes through `RunService.dispatch`. When a `resume_key` is supplied the request is treated as a durable thread message authored by `"integration"`.
 - `POST /runs/{run_id}/cancel` — interrupts a running run.
 - `GET /runs` — active run ids.
+- `POST /threads/{resume_key}/messages` — `{author, content}` → `RunResult` (flattened) or `null` if the message was queued onto an already-running drainer.
+- `GET /threads` — `{threads: [{resume_key, entry_count, last_timestamp}]}`.
+- `GET /threads/{resume_key}` — full thread as JSON (`resume_key`, `read_cursor`, `entries: [{author, content, timestamp, attachments}]`).
 - `GET /health` — status + active run count + total chunk count.
 - `GET /vault/search?q=...&limit=...&file=...` — top-k chunks, each with file path, heading, score.
 - `GET /vault/recall?path=...` — full markdown body of a vault file.
@@ -243,14 +286,16 @@ Packaging: `pyproject.toml` includes `tool.setuptools.package-data = { "agent_en
 
 - Own bot token. Optional.
 - If `channel_id` is set, listens only in that channel and its threads.
-- New message in the target channel → creates a thread and dispatches. Message in a thread → dispatches with `resume_key = thread.id`.
-- Results sent in ≤`character_limit` chunks. Errors prefixed with `[error]`.
+- New message in the target channel → creates a thread and submits through `RunService.submit_message(resume_key=str(thread.id), author=message.author.display_name, content=prompt)`. Message in a thread → same call with the existing thread id as the `resume_key`.
+- If `submit_message` returns a `RunResult`, the summary is sent in ≤`character_limit` chunks. If it returns `None`, the caller sends nothing — the drainer from the active run already owns the reply.
+- Messages sent during an active run are appended to the durable thread and replayed on the next drain as a single combined prompt starting with `"[Queued messages while you were working:]"`.
 
 ### CLI
 
 - `agent-engine serve [--no-discord] [--no-http] [--no-watcher]` — start all enabled intakes.
 - `agent-engine run --prompt "..." [--resume-key KEY] [--model ...]`
 - `agent-engine vault search QUERY [--limit N] [--file PATH]` / `agent-engine vault list` / `agent-engine vault recall PATH`
+- `agent-engine thread list [--limit N]` / `agent-engine thread recall RESUME_KEY`
 - `agent-engine --cwd PATH --data-dir PATH` sets the project directory (default: `.`) and data directory (default: `~/.agent-engine/`).
 
 ## Providers
@@ -272,18 +317,20 @@ Packaging: `pyproject.toml` includes `tool.setuptools.package-data = { "agent_en
 
 Sessions can be cancelled mid-run via `Runner.interrupt(run_id)`. The flow:
 
-1. **Auto-interrupt on dispatch**: `RunService.dispatch()` tracks active runs by `resume_key`. When a new dispatch arrives for a key with an active run, the service interrupts the running session and waits for it to finish (up to 30s timeout) before starting the new one.
-2. **Manual cancel**: `POST /runs/{run_id}/cancel` → `RunService.interrupt(run_id)` → `Runner.interrupt(run_id)`.
-3. **Claude provider**: `ProcessManager` (`providers/claude/process_manager.py`) tracks active `ClaudeSDKClient` instances by `run_id`. On interrupt, calls `client.interrupt()` on the SDK client, marks the run as interrupted.
-4. **Run lifecycle**: Runner registers the client with `ProcessManager` at session start, unregisters at session end. After a session completes, `consume_interrupted(run_id)` checks if the run was interrupted. If so, error results are converted to success with empty output.
-5. **Codex provider**: Stub returns `False` (no-op).
-6. **HTTP**: `GET /runs` lists active run ids. `GET /health` includes `active_runs`.
+1. **Thread-driven drainer**: `RunService.submit_message(resume_key, author, content)` appends the entry through `ThreadService.handle_message`. If no drainer is currently active for `resume_key`, the service claims the key and loops `get_pending_prompts → _execute → log_reply → acknowledge` until no unread non-agent entries remain. The cursor advances only on `acknowledge`, so an interrupted execute is safe to replay.
+2. **Queue-while-active**: If a drainer is already active for `resume_key`, `submit_message` appends the entry and calls `Runner.interrupt(run_id)` on the active run, then returns `None`. The active drainer reads the new pending prompt on its next iteration, which combines any queued entries into a single `"[Queued messages while you were working:]"` prompt.
+3. **Auto-interrupt for non-thread dispatch**: Legacy `dispatch(prompt, resume_key=...)` with no thread service configured still tracks active runs by `resume_key` and interrupts a stale run before launching a new one (30s wait).
+4. **Manual cancel**: `POST /runs/{run_id}/cancel` → `RunService.interrupt(run_id)` → `Runner.interrupt(run_id)`.
+5. **Claude provider**: `ProcessManager` (`providers/claude/process_manager.py`) tracks active `ClaudeSDKClient` instances by `run_id`. On interrupt, calls `client.interrupt()` on the SDK client, marks the run as interrupted.
+6. **Run lifecycle**: Runner registers the client with `ProcessManager` at session start, unregisters at session end. After a session completes, `consume_interrupted(run_id)` checks if the run was interrupted. If so, error results are converted to success with empty output.
+7. **Codex provider**: Stub returns `False` (no-op).
+8. **HTTP**: `GET /runs` lists active run ids. `GET /health` includes `active_runs`.
 
 ## Lifecycle
 
 `main.run_engine(cwd, data_dir, disable_discord, disable_http, disable_watcher)`:
 
-1. `build_engine(cwd)` — load config, configure logging, open SQLite, build vault service + scanner (run one scan to index any out-of-band files), install bundled skills into `{cwd}/.claude/skills/`, build runner, resume store, `RunService`. Vault uses `NumpyVectorStore` persisted to `{data-dir}/.store/` with `nomic-embed-text-v1.5` embeddings.
+1. `build_engine(cwd)` — load config, configure logging, open SQLite, build vault service + scanner (run one scan to index any out-of-band files), install bundled skills into `{cwd}/.claude/skills/`, build thread service (JSONL repository + SQLite cursor store), runner (receives both vault and thread MCP servers), resume store, `RunService`. Vault uses `NumpyVectorStore` persisted to `{data-dir}/.store/` with `nomic-embed-text-v1.5` embeddings.
 2. `_build_intakes()` — instantiate `VaultWatcher`, HTTP, and Discord intakes per config and flags.
 3. Start each intake sequentially. Wait on `stop_event` (SIGINT/SIGTERM).
 4. On shutdown: stop intakes in reverse order, close SQLite.

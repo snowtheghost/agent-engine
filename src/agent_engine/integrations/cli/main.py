@@ -61,6 +61,13 @@ def _build_parser() -> argparse.ArgumentParser:
 
     vault_sub.add_parser("list", help="List indexed vault file paths.")
 
+    thread = subparsers.add_parser("thread", help="Durable thread operations.")
+    thread_sub = thread.add_subparsers(dest="thread_command", required=True)
+    thread_list = thread_sub.add_parser("list", help="List stored thread resume_keys.")
+    thread_list.add_argument("--limit", type=int, default=20)
+    thread_recall = thread_sub.add_parser("recall", help="Print the transcript of a thread.")
+    thread_recall.add_argument("resume_key")
+
     return parser
 
 
@@ -93,6 +100,9 @@ async def _run_prompt(
         result = await engine.run_service.dispatch(
             prompt, resume_key=resume_key, model=model
         )
+        if result is None:
+            print("(queued — active run in progress)")
+            return 0
         print(result.summary)
         if not result.success:
             sys.stderr.write(f"\n[error] {result.error}\n")
@@ -160,6 +170,49 @@ def _run_vault_recall(cwd: Path, data_dir: Path | None, path: str) -> int:
         shutdown_engine(engine)
 
 
+def _run_thread_list(cwd: Path, data_dir: Path | None, limit: int) -> int:
+    from agent_engine.main import build_engine, shutdown_engine
+
+    engine = build_engine(cwd=cwd, data_dir=data_dir)
+    try:
+        keys = engine.thread_service.list_threads(limit=limit)
+        if not keys:
+            print("No threads stored.")
+            return 0
+        for key in keys:
+            print(key)
+        return 0
+    finally:
+        shutdown_engine(engine)
+
+
+def _run_thread_recall(cwd: Path, data_dir: Path | None, resume_key: str) -> int:
+    from agent_engine.main import build_engine, shutdown_engine
+
+    engine = build_engine(cwd=cwd, data_dir=data_dir)
+    try:
+        thread = engine.thread_service.get_thread(resume_key)
+        if thread is None:
+            sys.stderr.write(f"No thread for resume_key {resume_key}\n")
+            return 1
+        for entry in thread.entries:
+            print(f"[From: {entry.author}] {entry.timestamp.isoformat()}")
+            print(entry.content)
+            if entry.attachments:
+                print("[Attachments:]")
+                for attachment in entry.attachments:
+                    print(
+                        f"  {attachment.filename} ({attachment.content_type}, "
+                        f"{attachment.size}B): {attachment.path}"
+                    )
+                    if attachment.description:
+                        print(f"    [Vision: {attachment.description}]")
+            print()
+        return 0
+    finally:
+        shutdown_engine(engine)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
@@ -179,6 +232,11 @@ def main(argv: list[str] | None = None) -> int:
             return _run_vault_list(cwd, data_dir)
         if args.vault_command == "recall":
             return _run_vault_recall(cwd, data_dir, args.path)
+    if args.command == "thread":
+        if args.thread_command == "list":
+            return _run_thread_list(cwd, data_dir, args.limit)
+        if args.thread_command == "recall":
+            return _run_thread_recall(cwd, data_dir, args.resume_key)
 
     parser.print_help()
     return 1

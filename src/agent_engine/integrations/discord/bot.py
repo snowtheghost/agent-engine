@@ -131,28 +131,46 @@ class DiscordIntake(Intake):
         message: discord.Message,
     ) -> None:
         thread = await self._ensure_thread(channel, message)
-        await self._dispatch_and_reply(thread, message.content, resume_key=str(thread.id))
+        await self._submit_and_reply(
+            thread,
+            author=message.author.display_name,
+            content=message.content,
+            resume_key=str(thread.id),
+        )
 
     async def _handle_thread_message(
         self,
         thread: discord.Thread,
         message: discord.Message,
     ) -> None:
-        await self._dispatch_and_reply(thread, message.content, resume_key=str(thread.id))
+        await self._submit_and_reply(
+            thread,
+            author=message.author.display_name,
+            content=message.content,
+            resume_key=str(thread.id),
+        )
 
-    async def _dispatch_and_reply(
+    async def _submit_and_reply(
         self,
         thread: discord.Thread,
-        prompt: str,
         *,
+        author: str,
+        content: str,
         resume_key: str,
     ) -> None:
         try:
             async with thread.typing():
-                result = await self._run_service.dispatch(prompt, resume_key=resume_key)
+                result = await self._run_service.submit_message(
+                    resume_key=resume_key,
+                    author=author,
+                    content=content,
+                )
         except Exception as error:
             logger.exception("discord_dispatch_failed")
             await self._send_chunked(thread, f"[error] {error}")
+            return
+
+        if result is None:
             return
 
         text = result.summary if result.summary else (result.error or "(no output)")

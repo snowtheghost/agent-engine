@@ -9,14 +9,21 @@ import structlog
 from agent_engine.application.integration.intake import Intake
 from agent_engine.application.run.runner.runner import Runner
 from agent_engine.application.run.service.run_service import RunService
+from agent_engine.application.thread.service.thread_service import ThreadService
 from agent_engine.application.vault.scanner.vault_scanner import VaultScanner
 from agent_engine.application.vault.service.vault_service import VaultService
 from agent_engine.infrastructure.persistence.database import open_database
 from agent_engine.infrastructure.persistence.sqlite_resume_handle_store import (
     SqliteResumeHandleStore,
 )
+from agent_engine.infrastructure.persistence.sqlite_thread_cursor_store import (
+    SqliteThreadCursorStore,
+)
 from agent_engine.infrastructure.system.config.config import EngineConfig, load_config
 from agent_engine.infrastructure.system.logging.logging import configure_logging
+from agent_engine.infrastructure.thread.persistence.jsonl_thread_repository import (
+    JsonlThreadRepository,
+)
 from agent_engine.infrastructure.vault.file_vault_scanner import FileVaultScanner
 from agent_engine.integrations.discord.bot import DiscordIntake
 from agent_engine.integrations.http.server import HttpIntake, build_app
@@ -24,6 +31,7 @@ from agent_engine.integrations.skills.installer import install_bundled_skills
 from agent_engine.integrations.watcher.vault_watcher import VaultWatcher
 from agent_engine.providers.claude.runner import ClaudeCodeRunner
 from agent_engine.providers.codex.runner import CodexRunner
+from agent_engine.tools.thread_tools import build_thread_mcp_server
 from agent_engine.tools.vault_tools import build_vault_mcp_server
 
 logger = structlog.get_logger(__name__)
@@ -36,6 +44,7 @@ class Engine:
     run_service: RunService
     vault_service: VaultService
     vault_scanner: VaultScanner
+    thread_service: ThreadService
     intakes: list[Intake]
 
 
@@ -69,10 +78,17 @@ def _build_vault(config: EngineConfig) -> tuple[VaultService, VaultScanner]:
     return service, scanner
 
 
-def _build_runner(config: EngineConfig, vault_service: VaultService) -> Runner:
+def _build_runner(
+    config: EngineConfig,
+    vault_service: VaultService,
+    thread_service: ThreadService,
+) -> Runner:
     name = config.provider.name
     if name == "claude":
-        mcp_servers = {"vault": build_vault_mcp_server(vault_service)}
+        mcp_servers = {
+            "vault": build_vault_mcp_server(vault_service),
+            "thread": build_thread_mcp_server(thread_service),
+        }
         timezone = config.provider.options.get("timezone", "UTC")
         max_buffer_size = int(config.provider.options.get("max_buffer_size", 100_000_000))
         betas = tuple(config.provider.options.get("betas", []) or ())
@@ -99,9 +115,21 @@ def build_engine(cwd: Path, data_dir: Path | None = None) -> Engine:
     vault_scanner.scan()
     installed = install_bundled_skills(config.cwd)
     logger.info("skills_installed", skills=installed, count=len(installed))
-    runner = _build_runner(config, vault_service)
+
+    cursor_store = SqliteThreadCursorStore(connection)
+    thread_repository = JsonlThreadRepository(
+        data_dir=config.data_dir,
+        cursor_store=cursor_store,
+    )
+    thread_service = ThreadService(repository=thread_repository)
+
+    runner = _build_runner(config, vault_service, thread_service)
     resume_store = SqliteResumeHandleStore(connection)
-    run_service = RunService(runner=runner, resume_handles=resume_store)
+    run_service = RunService(
+        runner=runner,
+        resume_handles=resume_store,
+        thread_service=thread_service,
+    )
 
     logger.info(
         "engine_built",
@@ -115,6 +143,7 @@ def build_engine(cwd: Path, data_dir: Path | None = None) -> Engine:
         run_service=run_service,
         vault_service=vault_service,
         vault_scanner=vault_scanner,
+        thread_service=thread_service,
         intakes=[],
     )
 
@@ -144,7 +173,7 @@ def _build_intakes(
         )
 
     if not disable_http and engine.config.http.enabled:
-        app = build_app(engine.run_service, engine.vault_service)
+        app = build_app(engine.run_service, engine.vault_service, engine.thread_service)
         intakes.append(
             HttpIntake(app=app, host=engine.config.http.host, port=engine.config.http.port)
         )

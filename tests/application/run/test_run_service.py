@@ -4,8 +4,37 @@ import pytest
 
 from agent_engine.application.run.service.resume_handle_store import ResumeHandleStore
 from agent_engine.application.run.service.run_service import RunService
+from agent_engine.application.thread.repository.thread_repository import ThreadRepository
+from agent_engine.application.thread.service.thread_service import (
+    AGENT_AUTHOR,
+    ThreadService,
+)
 from agent_engine.core.run.model.resume_handle import ResumeHandle
 from agent_engine.core.run.model.run_result import RunResult
+from agent_engine.core.thread.model.thread import Thread, ThreadEntry
+
+
+class InMemoryThreadRepository(ThreadRepository):
+
+    def __init__(self) -> None:
+        self.threads: dict[str, Thread] = {}
+
+    def append(self, resume_key, entry):
+        thread = self.threads.setdefault(resume_key, Thread(resume_key=resume_key))
+        thread.entries.append(entry)
+
+    def load(self, resume_key):
+        return self.threads.get(resume_key)
+
+    def delete(self, resume_key):
+        return self.threads.pop(resume_key, None) is not None
+
+    def list_keys(self):
+        return list(self.threads.keys())
+
+    def update_cursor(self, resume_key, cursor):
+        thread = self.threads.setdefault(resume_key, Thread(resume_key=resume_key))
+        thread.read_cursor = cursor
 
 
 class InMemoryResumeStore(ResumeHandleStore):
@@ -287,3 +316,129 @@ class TestDispatchInterruptsActiveRun:
 
         await service.dispatch("hi", resume_key="k1")
         assert "k1" not in service._active_by_key
+
+
+class TestSubmitMessage:
+
+    @pytest.mark.asyncio
+    async def test_submit_message_runs_drainer_for_single_entry(self) -> None:
+        repository = InMemoryThreadRepository()
+        thread_service = ThreadService(repository)
+        runner = FakeRunner()
+        store = InMemoryResumeStore()
+        service = RunService(
+            runner=runner,
+            resume_handles=store,
+            thread_service=thread_service,
+        )
+
+        result = await service.submit_message(
+            resume_key="k1",
+            author="alice",
+            content="hello",
+        )
+
+        assert result is not None
+        assert runner.calls[0]["prompt"].startswith("[From: alice]")
+        thread = repository.load("k1")
+        assert thread is not None
+        assert thread.read_cursor == 1
+        assert thread.entries[-1].author == AGENT_AUTHOR
+
+    @pytest.mark.asyncio
+    async def test_submit_message_while_active_returns_none_and_combines(self) -> None:
+        repository = InMemoryThreadRepository()
+        thread_service = ThreadService(repository)
+        runner = SlowRunner()
+        store = InMemoryResumeStore()
+        service = RunService(
+            runner=runner,
+            resume_handles=store,
+            thread_service=thread_service,
+        )
+
+        first = asyncio.create_task(
+            service.submit_message(resume_key="k1", author="alice", content="first")
+        )
+
+        while not runner.calls:
+            await asyncio.sleep(0.01)
+
+        first_run_id = runner.calls[0]["run_id"]
+        await runner._run_started[first_run_id].wait()
+
+        second = await service.submit_message(
+            resume_key="k1", author="alice", content="second"
+        )
+        third = await service.submit_message(
+            resume_key="k1", author="alice", content="third"
+        )
+        assert second is None
+        assert third is None
+
+        while len(runner.calls) < 2:
+            await asyncio.sleep(0.01)
+
+        second_run_id = runner.calls[1]["run_id"]
+        runner._active[second_run_id].set()
+
+        result = await first
+
+        assert result is not None
+        assert "first" in runner.calls[0]["prompt"]
+        assert runner.calls[1]["prompt"].startswith(
+            "[Queued messages while you were working:]"
+        )
+        assert "second" in runner.calls[1]["prompt"]
+        assert "third" in runner.calls[1]["prompt"]
+        assert runner.was_interrupted(first_run_id)
+
+    @pytest.mark.asyncio
+    async def test_submit_message_logs_agent_reply(self) -> None:
+        repository = InMemoryThreadRepository()
+        thread_service = ThreadService(repository)
+        runner = FakeRunner()
+        store = InMemoryResumeStore()
+        service = RunService(
+            runner=runner,
+            resume_handles=store,
+            thread_service=thread_service,
+        )
+
+        await service.submit_message(resume_key="k1", author="alice", content="hi")
+
+        thread = repository.load("k1")
+        assert thread is not None
+        agent_entries = [e for e in thread.entries if e.author == AGENT_AUTHOR]
+        assert len(agent_entries) == 1
+        assert agent_entries[0].content == "ok"
+
+    @pytest.mark.asyncio
+    async def test_dispatch_routes_through_submit_message_when_thread_service_present(
+        self,
+    ) -> None:
+        repository = InMemoryThreadRepository()
+        thread_service = ThreadService(repository)
+        runner = FakeRunner()
+        store = InMemoryResumeStore()
+        service = RunService(
+            runner=runner,
+            resume_handles=store,
+            thread_service=thread_service,
+        )
+
+        result = await service.dispatch("hello", resume_key="k1")
+        assert result is not None
+        thread = repository.load("k1")
+        assert thread is not None
+        assert thread.entries[0].author == "integration"
+
+    @pytest.mark.asyncio
+    async def test_submit_message_without_thread_service_raises(self) -> None:
+        store = InMemoryResumeStore()
+        runner = FakeRunner()
+        service = RunService(runner=runner, resume_handles=store)
+        with pytest.raises(RuntimeError):
+            await service.submit_message(
+                resume_key="k1", author="alice", content="hi"
+            )

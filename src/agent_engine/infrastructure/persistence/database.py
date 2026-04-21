@@ -8,6 +8,12 @@ CREATE TABLE IF NOT EXISTS resume_handles (
     session_id TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS thread_cursors (
+    resume_key TEXT PRIMARY KEY,
+    cursor INTEGER NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 
