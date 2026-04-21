@@ -20,6 +20,7 @@ from agent_engine.infrastructure.system.logging.logging import configure_logging
 from agent_engine.infrastructure.vault.file_vault_scanner import FileVaultScanner
 from agent_engine.integrations.discord.bot import DiscordIntake
 from agent_engine.integrations.http.server import HttpIntake, build_app
+from agent_engine.integrations.skills.installer import install_bundled_skills
 from agent_engine.integrations.watcher.vault_watcher import VaultWatcher
 from agent_engine.providers.claude.runner import ClaudeCodeRunner
 from agent_engine.providers.codex.runner import CodexRunner
@@ -96,6 +97,8 @@ def build_engine(cwd: Path, data_dir: Path | None = None) -> Engine:
     connection = open_database(config.database_path)
     vault_service, vault_scanner = _build_vault(config)
     vault_scanner.scan()
+    installed = install_bundled_skills(config.cwd)
+    logger.info("skills_installed", skills=installed, count=len(installed))
     runner = _build_runner(config, vault_service)
     resume_store = SqliteResumeHandleStore(connection)
     run_service = RunService(runner=runner, resume_handles=resume_store)

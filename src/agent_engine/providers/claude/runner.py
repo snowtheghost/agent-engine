@@ -207,6 +207,7 @@ class ClaudeCodeRunner:
             stderr=lambda line: logger.debug("cli_stderr", output=line),
             thinking={"type": "adaptive"},
             effort="max",
+            skills="all",
         )
 
     async def _stream_session(
