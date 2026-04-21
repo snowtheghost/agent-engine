@@ -107,3 +107,82 @@ def test_vault_roundtrip(client):
 def test_vault_recall_not_found(client):
     resp = client.get("/vault/entries/missing")
     assert resp.status_code == 404
+
+
+def test_cancel_run_returns_false_for_unknown(client):
+    resp = client.post("/runs/nonexistent/cancel")
+    assert resp.status_code == 200
+    assert resp.json() == {"cancelled": False}
+
+
+def test_list_active_runs_returns_empty(client):
+    resp = client.get("/runs")
+    assert resp.status_code == 200
+    assert resp.json() == {"active": []}
+
+
+class TrackableRunner:
+
+    def __init__(self) -> None:
+        self._active: set[str] = set()
+        self._interrupted: set[str] = set()
+
+    @property
+    def provider_name(self):
+        return "trackable"
+
+    async def run(self, prompt, *, run_id, resume_handle, model):
+        return RunResult(
+            run_id=run_id,
+            success=True,
+            summary=f"echo: {prompt}",
+            error=None,
+            duration_ms=1,
+            cost_usd=0.0,
+            turns=1,
+            resume_handle=ResumeHandle(provider="trackable", session_id="sess-1"),
+        )
+
+    async def interrupt(self, run_id):
+        if run_id not in self._active:
+            return False
+        self._interrupted.add(run_id)
+        return True
+
+    def is_running(self, run_id):
+        return run_id in self._active
+
+    def active_run_ids(self):
+        return set(self._active)
+
+
+@pytest.fixture()
+def trackable_client(tmp_path):
+    vault = VaultService(
+        repository=FileVaultRepository(tmp_path / "vault"),
+        index=InMemoryVectorIndex(),
+    )
+    runner = TrackableRunner()
+    run_service = RunService(runner=runner, resume_handles=InMemoryStore())
+    app = build_app(run_service, vault)
+    return TestClient(app), runner
+
+
+def test_cancel_active_run(trackable_client):
+    client, runner = trackable_client
+    runner._active.add("run-1")
+
+    resp = client.post("/runs/run-1/cancel")
+    assert resp.status_code == 200
+    assert resp.json() == {"cancelled": True}
+    assert "run-1" in runner._interrupted
+
+
+def test_list_active_runs(trackable_client):
+    client, runner = trackable_client
+    runner._active.update({"run-a", "run-b"})
+
+    resp = client.get("/runs")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["active"] == ["run-a", "run-b"]

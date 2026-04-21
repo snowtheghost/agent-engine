@@ -1,3 +1,4 @@
+import asyncio
 import uuid
 from datetime import datetime, timezone
 
@@ -9,6 +10,8 @@ from agent_engine.core.run.model.run_result import RunResult
 
 logger = structlog.get_logger(__name__)
 
+_INTERRUPT_WAIT_TIMEOUT = 30
+
 
 class RunService:
 
@@ -19,6 +22,7 @@ class RunService:
     ) -> None:
         self._runner = runner
         self._resume_handles = resume_handles
+        self._active_by_key: dict[str, str] = {}
 
     async def dispatch(
         self,
@@ -43,12 +47,20 @@ class RunService:
             started_at=datetime.now(timezone.utc).isoformat(),
         )
 
-        result = await self._runner.run(
-            prompt,
-            run_id=run_id,
-            resume_handle=existing_handle,
-            model=model,
-        )
+        if resume_key is not None:
+            await self._interrupt_active_run(resume_key)
+            self._active_by_key[resume_key] = run_id
+
+        try:
+            result = await self._runner.run(
+                prompt,
+                run_id=run_id,
+                resume_handle=existing_handle,
+                model=model,
+            )
+        finally:
+            if resume_key is not None:
+                self._active_by_key.pop(resume_key, None)
 
         if resume_key is not None and result.resume_handle is not None:
             self._resume_handles.put(resume_key, result.resume_handle)
@@ -63,6 +75,35 @@ class RunService:
             turns=result.turns,
         )
         return result
+
+    async def _interrupt_active_run(self, resume_key: str) -> None:
+        active_run_id = self._active_by_key.get(resume_key)
+        if active_run_id is None:
+            return
+        if not self._runner.is_running(active_run_id):
+            self._active_by_key.pop(resume_key, None)
+            return
+
+        logger.info(
+            "interrupting_active_run",
+            resume_key=resume_key,
+            run_id=active_run_id,
+        )
+        await self._runner.interrupt(active_run_id)
+
+        deadline = asyncio.get_running_loop().time() + _INTERRUPT_WAIT_TIMEOUT
+        while self._runner.is_running(active_run_id):
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining <= 0:
+                logger.warning(
+                    "interrupt_wait_timeout",
+                    resume_key=resume_key,
+                    run_id=active_run_id,
+                )
+                break
+            await asyncio.sleep(0.1)
+
+        self._active_by_key.pop(resume_key, None)
 
     async def interrupt(self, run_id: str) -> bool:
         return await self._runner.interrupt(run_id)

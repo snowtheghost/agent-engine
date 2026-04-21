@@ -67,7 +67,10 @@ src/agent_engine/
 │   ├── vault/file_vault_scanner.py         # directory scanner + index sync
 │   ├── vault/markdown_frontmatter.py       # YAML frontmatter format/parse
 │   ├── vault/in_memory_vector_index.py     # dev/test default
-│   ├── vault/sentence_transformers_index.py # production default
+│   ├── vault/numpy_vector_store.py         # persistent numpy-backed vector store
+│   ├── vault/persistent_vector_index.py    # VectorIndex adapter over NumpyVectorStore
+│   ├── vault/embedding.py                  # nomic-embed-text-v1.5 with asymmetric prefixing
+│   ├── vault/sentence_transformers_index.py # legacy (unused in production)
 │   ├── persistence/database.py             # sqlite schema (resume handles only)
 │   ├── persistence/sqlite_resume_handle_store.py
 │   └── system/config/config.py             # YAML config loader
@@ -234,6 +237,17 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 ### Codex (`providers/codex/`)
 
 - `CodexRunner` stub. `NotImplementedError`. Lands properly when codex CLI / API story is real.
+
+## Interrupt flow
+
+Sessions can be cancelled mid-run via `Runner.interrupt(run_id)`. The flow:
+
+1. **Auto-interrupt on dispatch**: `RunService.dispatch()` tracks active runs by `resume_key`. When a new dispatch arrives for a key with an active run, the service interrupts the running session and waits for it to finish (up to 30s timeout) before starting the new one.
+2. **Manual cancel**: `POST /runs/{run_id}/cancel` → `RunService.interrupt(run_id)` → `Runner.interrupt(run_id)`.
+3. **Claude provider**: `ProcessManager` (`providers/claude/process_manager.py`) tracks active `ClaudeSDKClient` instances by `run_id`. On interrupt, calls `client.interrupt()` on the SDK client, marks the run as interrupted.
+4. **Run lifecycle**: Runner registers the client with `ProcessManager` at session start, unregisters at session end. After a session completes, `consume_interrupted(run_id)` checks if the run was interrupted. If so, error results are converted to success with empty output.
+5. **Codex provider**: Stub returns `False` (no-op).
+6. **HTTP**: `GET /runs` lists active run ids. `GET /health` includes `active_runs`.
 
 ## Lifecycle
 
