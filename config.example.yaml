@@ -7,7 +7,6 @@ provider:
     betas: []
 
 vault:
-  embedding_model: all-MiniLM-L6-v2
   # directory: /path/to/vault  # defaults to data_dir
 
 discord:

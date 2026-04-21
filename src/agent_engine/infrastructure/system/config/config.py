@@ -26,7 +26,6 @@ class HttpConfig:
 
 @dataclass(frozen=True)
 class VaultConfig:
-    embedding_model: str
     directory: Path
 
 
@@ -54,7 +53,7 @@ class EngineConfig:
 
 _DEFAULTS: dict[str, Any] = {
     "provider": {"name": "claude", "model": None, "options": {}},
-    "vault": {"embedding_model": "all-MiniLM-L6-v2"},
+    "vault": {},
     "discord": {"token": None, "channel_id": None, "character_limit": 2000, "history_limit": 50},
     "http": {"host": "127.0.0.1", "port": 8938, "enabled": True},
     "log_level": "INFO",
@@ -127,10 +126,7 @@ def load_config(cwd: Path | str, data_dir: Path | str | None = None) -> EngineCo
     vault_directory_raw = merged["vault"].get("directory")
     vault_directory = Path(vault_directory_raw).resolve() if vault_directory_raw else data_dir_path
 
-    vault = VaultConfig(
-        embedding_model=merged["vault"]["embedding_model"],
-        directory=vault_directory,
-    )
+    vault = VaultConfig(directory=vault_directory)
 
     discord_raw = merged["discord"]
     discord = DiscordConfig(
