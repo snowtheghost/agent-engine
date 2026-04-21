@@ -242,11 +242,12 @@ Intakes call into `RunService` and `VaultService`. They do not touch providers d
 
 Sessions can be cancelled mid-run via `Runner.interrupt(run_id)`. The flow:
 
-1. **Request**: `POST /runs/{run_id}/cancel` → `RunService.interrupt(run_id)` → `Runner.interrupt(run_id)`.
-2. **Claude provider**: `ProcessManager` (`providers/claude/process_manager.py`) tracks active `ClaudeSDKClient` instances by `run_id`. On interrupt, calls `client.interrupt()` on the SDK client, marks the run as interrupted.
-3. **Run lifecycle**: Runner registers the client with `ProcessManager` at session start, unregisters at session end. After a session completes, `consume_interrupted(run_id)` checks if the run was interrupted. If so, error results are converted to success with empty output.
-4. **Codex provider**: Stub returns `False` (no-op).
-5. **HTTP**: `GET /runs` lists active run ids. `GET /health` includes `active_runs`.
+1. **Auto-interrupt on dispatch**: `RunService.dispatch()` tracks active runs by `resume_key`. When a new dispatch arrives for a key with an active run, the service interrupts the running session and waits for it to finish (up to 30s timeout) before starting the new one.
+2. **Manual cancel**: `POST /runs/{run_id}/cancel` → `RunService.interrupt(run_id)` → `Runner.interrupt(run_id)`.
+3. **Claude provider**: `ProcessManager` (`providers/claude/process_manager.py`) tracks active `ClaudeSDKClient` instances by `run_id`. On interrupt, calls `client.interrupt()` on the SDK client, marks the run as interrupted.
+4. **Run lifecycle**: Runner registers the client with `ProcessManager` at session start, unregisters at session end. After a session completes, `consume_interrupted(run_id)` checks if the run was interrupted. If so, error results are converted to success with empty output.
+5. **Codex provider**: Stub returns `False` (no-op).
+6. **HTTP**: `GET /runs` lists active run ids. `GET /health` includes `active_runs`.
 
 ## Lifecycle
 

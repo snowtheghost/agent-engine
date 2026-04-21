@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from agent_engine.application.run.service.resume_handle_store import ResumeHandleStore
@@ -27,6 +29,7 @@ class FakeRunner:
         self._session_ids = list(session_ids or ["sess-1"])
         self.calls: list[dict] = []
         self._active: set[str] = set()
+        self._interrupted: set[str] = set()
 
     @property
     def provider_name(self) -> str:
@@ -54,13 +57,74 @@ class FakeRunner:
         )
 
     async def interrupt(self, run_id):
-        return run_id in self._active
+        if run_id in self._active:
+            self._active.discard(run_id)
+            self._interrupted.add(run_id)
+            return True
+        return False
 
     def is_running(self, run_id):
         return run_id in self._active
 
     def active_run_ids(self):
         return set(self._active)
+
+
+class SlowRunner:
+
+    def __init__(self) -> None:
+        self._active: dict[str, asyncio.Event] = {}
+        self._interrupted: set[str] = set()
+        self.calls: list[dict] = []
+        self._run_started: dict[str, asyncio.Event] = {}
+
+    @property
+    def provider_name(self) -> str:
+        return "slow"
+
+    async def run(self, prompt, *, run_id, resume_handle, model):
+        finish_event = asyncio.Event()
+        start_event = asyncio.Event()
+        self._active[run_id] = finish_event
+        self._run_started[run_id] = start_event
+        self.calls.append(
+            {
+                "prompt": prompt,
+                "run_id": run_id,
+                "resume_handle": resume_handle,
+                "model": model,
+            }
+        )
+        start_event.set()
+        await finish_event.wait()
+        self._active.pop(run_id, None)
+        return RunResult(
+            run_id=run_id,
+            success=True,
+            summary="ok",
+            error=None,
+            duration_ms=1,
+            cost_usd=0.0,
+            turns=1,
+            resume_handle=ResumeHandle(provider="slow", session_id="sess-1"),
+        )
+
+    async def interrupt(self, run_id):
+        event = self._active.get(run_id)
+        if event is not None:
+            self._interrupted.add(run_id)
+            event.set()
+            return True
+        return False
+
+    def is_running(self, run_id):
+        return run_id in self._active
+
+    def active_run_ids(self):
+        return set(self._active.keys())
+
+    def was_interrupted(self, run_id):
+        return run_id in self._interrupted
 
 
 @pytest.mark.asyncio
@@ -147,3 +211,79 @@ class TestInterrupt:
 
         assert service.is_running("run-1") is True
         assert service.is_running("run-2") is False
+
+
+class TestDispatchInterruptsActiveRun:
+    @pytest.mark.asyncio
+    async def test_interrupts_active_run_before_dispatching_new(self) -> None:
+        runner = SlowRunner()
+        store = InMemoryResumeStore()
+        service = RunService(runner=runner, resume_handles=store)
+
+        first_dispatch = asyncio.create_task(
+            service.dispatch("first", resume_key="k1")
+        )
+
+        while not runner.calls:
+            await asyncio.sleep(0.01)
+
+        first_run_id = runner.calls[0]["run_id"]
+
+        started_event = runner._run_started.get(first_run_id)
+        assert started_event is not None
+        await started_event.wait()
+
+        assert runner.is_running(first_run_id)
+
+        second_dispatch = asyncio.create_task(
+            service.dispatch("second", resume_key="k1")
+        )
+
+        await first_dispatch
+
+        while len(runner.calls) < 2:
+            await asyncio.sleep(0.01)
+
+        second_run_id = runner.calls[1]["run_id"]
+        finish_event = runner._active.get(second_run_id)
+        assert finish_event is not None
+        finish_event.set()
+
+        await second_dispatch
+
+        assert runner.was_interrupted(first_run_id)
+        assert not runner.was_interrupted(second_run_id)
+        assert runner.calls[0]["prompt"] == "first"
+        assert runner.calls[1]["prompt"] == "second"
+
+    @pytest.mark.asyncio
+    async def test_no_interrupt_when_no_active_run(self) -> None:
+        runner = FakeRunner()
+        store = InMemoryResumeStore()
+        service = RunService(runner=runner, resume_handles=store)
+
+        await service.dispatch("first", resume_key="k1")
+        await service.dispatch("second", resume_key="k1")
+
+        assert len(runner.calls) == 2
+        assert len(runner._interrupted) == 0
+
+    @pytest.mark.asyncio
+    async def test_dispatch_without_resume_key_does_not_track(self) -> None:
+        runner = FakeRunner()
+        store = InMemoryResumeStore()
+        service = RunService(runner=runner, resume_handles=store)
+
+        await service.dispatch("a")
+        await service.dispatch("b")
+
+        assert len(runner.calls) == 2
+
+    @pytest.mark.asyncio
+    async def test_active_run_cleared_after_dispatch_completes(self) -> None:
+        runner = FakeRunner()
+        store = InMemoryResumeStore()
+        service = RunService(runner=runner, resume_handles=store)
+
+        await service.dispatch("hi", resume_key="k1")
+        assert "k1" not in service._active_by_key
