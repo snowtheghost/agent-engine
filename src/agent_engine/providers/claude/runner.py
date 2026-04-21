@@ -11,10 +11,12 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    PermissionResultAllow,
     ResultMessage,
     SystemMessage,
     TextBlock,
     ThinkingBlock,
+    ToolPermissionContext,
     ToolResultBlock,
     ToolUseBlock,
 )
@@ -41,6 +43,14 @@ PROVIDER_NAME = "claude"
 _SUMMARY_TAIL_COUNT = 3
 _LOG_PREVIEW_LENGTH = 200
 _DISALLOWED_BUILTIN_TOOLS: list[str] = ["Task", "Agent"]
+
+
+async def _allow_all(
+    tool_name: str,
+    tool_input: dict[str, Any],
+    context: ToolPermissionContext,
+) -> PermissionResultAllow:
+    return PermissionResultAllow()
 
 
 def _build_time_context(timezone: str) -> str:
@@ -139,7 +149,6 @@ def _build_run_result(
 
 
 class ClaudeCodeRunner:
-
     def __init__(
         self,
         *,
@@ -200,6 +209,7 @@ class ClaudeCodeRunner:
             mcp_servers=mcp_servers,
             cwd=self._cwd,
             permission_mode="bypassPermissions",
+            can_use_tool=_allow_all,
             setting_sources=["user", "project"],
             resume=session_id,
             allowed_tools=allowed_tools,
@@ -235,9 +245,7 @@ class ClaudeCodeRunner:
                     if isinstance(block, TextBlock):
                         state.final_text_parts.append(block.text)
                     elif isinstance(block, ToolUseBlock):
-                        tool_name = (
-                            block.name.split("__")[-1] if "__" in block.name else block.name
-                        )
+                        tool_name = block.name.split("__")[-1] if "__" in block.name else block.name
                         if tool_name in ("Task", "Agent"):
                             state.used_task_tool = True
                         detail = extract_tool_detail(block.name, block.input)
@@ -324,9 +332,7 @@ class ClaudeCodeRunner:
                     task_completed = state.task_completed
             except BaseExceptionGroup as eg:
                 critical = eg.subgroup(
-                    lambda e: isinstance(
-                        e, (KeyboardInterrupt, SystemExit, asyncio.CancelledError)
-                    )
+                    lambda e: isinstance(e, (KeyboardInterrupt, SystemExit, asyncio.CancelledError))
                 )
                 if task_completed:
                     logger.warning("sdk_teardown_error_suppressed", error=str(eg))
