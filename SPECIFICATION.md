@@ -48,6 +48,7 @@ src/agent_engine/
 ├── integrations/
 │   ├── discord/bot.py               # DiscordIntake
 │   ├── http/server.py               # HttpIntake + FastAPI app
+│   ├── watcher/vault_watcher.py     # VaultWatcher (filesystem → ingest/evict)
 │   └── cli/main.py                  # CLI entrypoint
 ├── providers/
 │   ├── claude/
@@ -163,13 +164,25 @@ The vault is a directory of free-form markdown files. Files are the source of tr
 
 - `VaultScanner` ABC in `application/vault/scanner/vault_scanner.py`. `scan(force=False) -> ScanReport(indexed_files, skipped_unchanged, removed_files, total_files, total_chunks)`.
 - `FileVaultScanner` walks the vault directory recursively for `.md` files. Per file: checksum (MD5) vs previous; if changed, delete existing chunks for that file, chunk, upsert. Deleted files have their chunks removed. Checksums persisted at `{vault.directory}/.vault_checksums.json`.
-- Invoked once at engine startup from `build_engine`. Handles files edited directly on disk.
+- Invoked once at engine startup from `build_engine`. Handles files that changed while the engine was down.
+
+### Watcher
+
+- `integrations/watcher/vault_watcher.py` defines `VaultWatcher(Intake)` — a filesystem watcher using `watchfiles.awatch`.
+- Reacts to `.md` / `.markdown` changes under `config.vault.directory`. Hidden paths (any component starting with `.`) are ignored.
+- Added or modified files → `VaultService.ingest(path)` (re-chunks + re-upserts).
+- Deleted files → `VaultService.evict(path)` (removes chunks for that file).
+- Non-markdown writes are dropped.
+- Debounce 500ms, step 100ms, recursive.
+- Enabled by default; disable per-run with `--no-watcher`. The initial scan still runs at startup; the watcher handles everything after.
 
 ### Service
 
 - `VaultService.write(title, content, tags=(), subdirectory=None)` → writes a slugified markdown file with frontmatter and an H1, chunks and upserts immediately, returns the written `Path`.
 - `VaultService.search(query, limit=5, file_filter=None)` → returns `list[VaultSearchHit]`.
 - `VaultService.recall(file_path)` → returns the full markdown body or `None`. Accepts either a vault-relative path or an absolute path under the vault root.
+- `VaultService.ingest(path)` → chunk + upsert a specific file by absolute path. Returns chunk count. Used by the watcher.
+- `VaultService.evict(path)` → remove chunks for a specific file. Returns removed count. Used by the watcher.
 - `VaultService.files()` → `set[str]` of relative paths currently indexed.
 - `VaultService.count()` → chunk count.
 - `VaultService.rescan(force=False)` → run the scanner.
@@ -217,7 +230,7 @@ The vault is a directory of free-form markdown files. Files are the source of tr
 
 ### CLI
 
-- `agent-engine serve` — start all enabled intakes.
+- `agent-engine serve [--no-discord] [--no-http] [--no-watcher]` — start all enabled intakes.
 - `agent-engine run --prompt "..." [--resume-key KEY] [--model ...]`
 - `agent-engine vault search QUERY [--limit N] [--file PATH]` / `agent-engine vault list` / `agent-engine vault recall PATH`
 - `agent-engine --cwd PATH --data-dir PATH` sets the project directory (default: `.`) and data directory (default: `~/.agent-engine/`).
@@ -250,10 +263,10 @@ Sessions can be cancelled mid-run via `Runner.interrupt(run_id)`. The flow:
 
 ## Lifecycle
 
-`main.run_engine(cwd, data_dir, disable_discord, disable_http)`:
+`main.run_engine(cwd, data_dir, disable_discord, disable_http, disable_watcher)`:
 
 1. `build_engine(cwd)` — load config, configure logging, open SQLite, build vault service + scanner (run one scan to index any out-of-band files), runner, resume store, `RunService`. Vault uses `NumpyVectorStore` persisted to `{data-dir}/.store/` with `nomic-embed-text-v1.5` embeddings.
-2. `_build_intakes()` — instantiate HTTP and Discord intakes per config.
+2. `_build_intakes()` — instantiate `VaultWatcher`, HTTP, and Discord intakes per config and flags.
 3. Start each intake sequentially. Wait on `stop_event` (SIGINT/SIGTERM).
 4. On shutdown: stop intakes in reverse order, close SQLite.
 

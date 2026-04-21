@@ -20,6 +20,7 @@ from agent_engine.infrastructure.system.logging.logging import configure_logging
 from agent_engine.infrastructure.vault.file_vault_scanner import FileVaultScanner
 from agent_engine.integrations.discord.bot import DiscordIntake
 from agent_engine.integrations.http.server import HttpIntake, build_app
+from agent_engine.integrations.watcher.vault_watcher import VaultWatcher
 from agent_engine.providers.claude.runner import ClaudeCodeRunner
 from agent_engine.providers.codex.runner import CodexRunner
 from agent_engine.tools.vault_tools import build_vault_mcp_server
@@ -127,8 +128,17 @@ def _build_intakes(
     *,
     disable_discord: bool,
     disable_http: bool,
+    disable_watcher: bool,
 ) -> list[Intake]:
     intakes: list[Intake] = []
+
+    if not disable_watcher:
+        intakes.append(
+            VaultWatcher(
+                directory=engine.config.vault.directory,
+                vault=engine.vault_service,
+            )
+        )
 
     if not disable_http and engine.config.http.enabled:
         app = build_app(engine.run_service, engine.vault_service)
@@ -161,10 +171,14 @@ async def run_engine(
     *,
     disable_discord: bool = False,
     disable_http: bool = False,
+    disable_watcher: bool = False,
 ) -> None:
     engine = build_engine(cwd, data_dir=data_dir)
     engine.intakes = _build_intakes(
-        engine, disable_discord=disable_discord, disable_http=disable_http
+        engine,
+        disable_discord=disable_discord,
+        disable_http=disable_http,
+        disable_watcher=disable_watcher,
     )
 
     stop_event = asyncio.Event()
