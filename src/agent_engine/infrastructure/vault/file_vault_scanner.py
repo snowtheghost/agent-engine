@@ -7,14 +7,13 @@ from pathlib import Path
 
 import structlog
 
-from agent_engine.application.vault.index.vector_index import VectorIndex
+from agent_engine.application.vault.index.vault_index import VaultIndex
 from agent_engine.application.vault.scanner.vault_scanner import ScanReport, VaultScanner
-from agent_engine.infrastructure.vault.file_vault_repository import VAULT_FILE_SUFFIX
-from agent_engine.infrastructure.vault.markdown_frontmatter import parse_entry
-
+from agent_engine.infrastructure.vault.chunker import chunk_markdown
 
 logger = structlog.get_logger(__name__)
 
+VAULT_FILE_SUFFIX = ".md"
 CHECKSUMS_FILE_NAME = ".vault_checksums.json"
 
 
@@ -23,7 +22,7 @@ class FileVaultScanner(VaultScanner):
     def __init__(
         self,
         directory: Path,
-        index: VectorIndex,
+        index: VaultIndex,
         checksum_path: Path | None = None,
     ) -> None:
         self._directory = directory
@@ -34,49 +33,55 @@ class FileVaultScanner(VaultScanner):
         self._directory.mkdir(parents=True, exist_ok=True)
 
         previous = {} if force else self._load_checksums()
-        current_checksums: dict[str, str] = {}
-        current_ids: set[str] = set()
+        current: dict[str, str] = {}
 
         indexed = 0
         skipped = 0
+        total_chunks = 0
 
         for path in self._markdown_files():
+            rel = self._relative_key(path)
             checksum = self._file_checksum(path)
-            key = self._relative_key(path)
-            current_checksums[key] = checksum
+            current[rel] = checksum
 
-            entry = self._read_entry(path)
-            if entry is None:
-                continue
-            current_ids.add(entry.entry_id)
-
-            if previous.get(key) == checksum:
+            if previous.get(rel) == checksum:
                 skipped += 1
                 continue
 
-            self._index.upsert(entry.entry_id, self._index_text(entry))
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                continue
+
+            self._index.delete_by_file(rel)
+            chunks = chunk_markdown(text, rel)
+            if chunks:
+                self._index.upsert(chunks)
+                total_chunks += len(chunks)
             indexed += 1
 
-        removed = 0
-        for entry_id in self._index.ids() - current_ids:
-            self._index.remove(entry_id)
-            removed += 1
+        removed_files = 0
+        for gone in set(previous) - set(current):
+            if self._index.delete_by_file(gone) > 0:
+                removed_files += 1
 
-        self._save_checksums(current_checksums)
+        self._save_checksums(current)
 
         report = ScanReport(
-            indexed=indexed,
+            indexed_files=indexed,
             skipped_unchanged=skipped,
-            removed=removed,
-            total=len(current_ids),
+            removed_files=removed_files,
+            total_files=len(current),
+            total_chunks=self._index.count(),
         )
         logger.info(
             "vault_scan",
             directory=str(self._directory),
             indexed=indexed,
             skipped=skipped,
-            removed=removed,
-            total=len(current_ids),
+            removed=removed_files,
+            total_files=len(current),
+            total_chunks=report.total_chunks,
         )
         return report
 
@@ -86,7 +91,8 @@ class FileVaultScanner(VaultScanner):
         return sorted(
             path
             for path in self._directory.rglob(f"*{VAULT_FILE_SUFFIX}")
-            if path.is_file() and not path.name.startswith(".")
+            if path.is_file()
+            and not any(part.startswith(".") for part in path.relative_to(self._directory).parts)
         )
 
     def _relative_key(self, path: Path) -> str:
@@ -98,18 +104,6 @@ class FileVaultScanner(VaultScanner):
     @staticmethod
     def _file_checksum(path: Path) -> str:
         return hashlib.md5(path.read_bytes()).hexdigest()
-
-    @staticmethod
-    def _read_entry(path: Path):
-        try:
-            text = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return None
-        return parse_entry(text)
-
-    @staticmethod
-    def _index_text(entry) -> str:
-        return f"{entry.title}\n{entry.body}"
 
     def _load_checksums(self) -> dict[str, str]:
         if not self._checksum_path.is_file():

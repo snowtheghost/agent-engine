@@ -1,71 +1,80 @@
 import pytest
 
 from agent_engine.application.vault.service.vault_service import VaultService
-from agent_engine.infrastructure.vault.file_vault_repository import FileVaultRepository
-from agent_engine.infrastructure.vault.in_memory_vector_index import InMemoryVectorIndex
+from agent_engine.infrastructure.vault.file_vault_scanner import FileVaultScanner
+from agent_engine.infrastructure.vault.in_memory_vault_index import InMemoryVaultIndex
 
 
 @pytest.fixture()
 def vault(tmp_path):
-    repository = FileVaultRepository(tmp_path / "vault")
-    index = InMemoryVectorIndex()
-    return VaultService(repository=repository, index=index)
+    directory = tmp_path / "vault"
+    directory.mkdir()
+    index = InMemoryVaultIndex()
+    scanner = FileVaultScanner(directory=directory, index=index)
+    return VaultService(directory=directory, index=index, scanner=scanner)
 
 
-def test_write_then_search(vault):
-    vault.write(kind="decision", title="Use WAL", body="Better concurrency story.")
-    vault.write(kind="pattern", title="Retry with backoff", body="Exponential backoff for transient errors.")
-    vault.write(kind="gotcha", title="GIL", body="Threads share memory but not CPU.")
-
-    hits = vault.search("concurrency", limit=5)
-    assert hits
-    assert hits[0].entry.title == "Use WAL"
-
-
-def test_search_hits_carry_file_paths(vault, tmp_path):
-    entry = vault.write(kind="note", title="hello", body="oauth session")
-    hits = vault.search("oauth", limit=5)
-    assert hits
-    assert hits[0].path == tmp_path / "vault" / f"{entry.entry_id}.md"
-    assert hits[0].path.is_file()
-
-
-def test_recall_returns_full_entry(vault):
-    entry = vault.write(kind="note", title="hello", body="world")
-    recalled = vault.recall(entry.entry_id)
-    assert recalled is not None
-    assert recalled.body == "world"
-
-
-def test_list_and_count(vault):
-    for i in range(3):
-        vault.write(kind="note", title=f"n{i}", body=f"body{i}")
-    assert vault.count() == 3
-    assert len(vault.list(10)) == 3
-
-
-def test_delete_removes_from_both_repo_and_index(vault):
-    entry = vault.write(kind="note", title="x", body="oauth2 secret")
-    assert vault.delete(entry.entry_id) is True
-    assert vault.recall(entry.entry_id) is None
-    assert vault.search("oauth2", limit=5) == []
-
-
-def test_search_returns_empty_when_no_match(vault):
-    vault.write(kind="note", title="apples", body="red fruit")
-    assert vault.search("spacecraft", limit=5) == []
-
-
-def test_tags_are_preserved(vault):
-    entry = vault.write(kind="note", title="t", body="b", tags=("a", "b"))
-    recalled = vault.recall(entry.entry_id)
-    assert recalled.tags == ("a", "b")
-
-
-def test_write_creates_markdown_file_on_disk(vault, tmp_path):
-    entry = vault.write(kind="decision", title="Use WAL", body="concurrency")
-    path = tmp_path / "vault" / f"{entry.entry_id}.md"
-    assert path.is_file()
+def test_write_creates_markdown_file(vault, tmp_path):
+    path = vault.write(title="Use WAL", content="Better concurrency story.")
+    assert path.exists()
     text = path.read_text(encoding="utf-8")
     assert text.startswith("---\n")
-    assert "concurrency" in text
+    assert "# Use WAL" in text
+    assert "Better concurrency story." in text
+
+
+def test_write_then_search_finds_file(vault):
+    vault.write(title="Auth flow", content="oauth pkce session management tokens.")
+    hits = vault.search("oauth", limit=5)
+    assert hits
+    assert hits[0].chunk.file_path.endswith(".md")
+
+
+def test_search_includes_filesystem_path(vault, tmp_path):
+    path = vault.write(title="Note", content="content with unique keyword pineapple inside.")
+    hits = vault.search("pineapple", limit=5)
+    assert hits
+    assert hits[0].path == path
+
+
+def test_recall_returns_full_markdown(vault):
+    path = vault.write(title="Something", content="Body text here with decent length.")
+    rel = path.name
+    body = vault.recall(rel)
+    assert body is not None
+    assert "Body text here" in body
+    assert body.startswith("---\n")
+
+
+def test_recall_missing_returns_none(vault):
+    assert vault.recall("does-not-exist.md") is None
+
+
+def test_write_into_subdirectory(vault, tmp_path):
+    path = vault.write(
+        title="Decision",
+        content="Use microservices for the auth layer please.",
+        subdirectory="Architecture",
+    )
+    assert path.parent.name == "Architecture"
+    hits = vault.search("microservices auth", limit=5)
+    assert hits
+    assert hits[0].chunk.file_path.startswith("Architecture/")
+
+
+def test_write_deduplicates_filenames(vault):
+    first = vault.write(title="Duplicate Title", content="First body long enough to chunk.")
+    second = vault.write(title="Duplicate Title", content="Second body long enough to chunk.")
+    assert first != second
+    assert first.exists() and second.exists()
+
+
+def test_tags_surface_in_search_results(vault):
+    vault.write(
+        title="Tagged",
+        content="Content about deployment pipeline and release strategy here.",
+        tags=("deploy", "ops"),
+    )
+    hits = vault.search("deployment pipeline", limit=5)
+    assert hits
+    assert "deploy" in hits[0].chunk.tags

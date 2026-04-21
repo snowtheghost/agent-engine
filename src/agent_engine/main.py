@@ -17,7 +17,6 @@ from agent_engine.infrastructure.persistence.sqlite_resume_handle_store import (
 )
 from agent_engine.infrastructure.system.config.config import EngineConfig, load_config
 from agent_engine.infrastructure.system.logging.logging import configure_logging
-from agent_engine.infrastructure.vault.file_vault_repository import FileVaultRepository
 from agent_engine.infrastructure.vault.file_vault_scanner import FileVaultScanner
 from agent_engine.integrations.discord.bot import DiscordIntake
 from agent_engine.integrations.http.server import HttpIntake, build_app
@@ -44,12 +43,9 @@ def _build_vault(config: EngineConfig) -> tuple[VaultService, VaultScanner]:
         embed_documents,
         embed_queries,
     )
+    from agent_engine.infrastructure.vault.numpy_vault_index import NumpyVaultIndex
     from agent_engine.infrastructure.vault.numpy_vector_store import NumpyVectorStore
-    from agent_engine.infrastructure.vault.persistent_vector_index import (
-        PersistentVectorIndex,
-    )
 
-    repository = FileVaultRepository(config.vault.directory)
     store_dir = config.data_dir / ".store"
     store = NumpyVectorStore(
         store_dir=store_dir,
@@ -58,12 +54,16 @@ def _build_vault(config: EngineConfig) -> tuple[VaultService, VaultScanner]:
         embedding_dim=EMBEDDING_DIM,
         query_embed_fn=embed_queries,
     )
-    index = PersistentVectorIndex(store=store)
+    index = NumpyVaultIndex(store=store)
     scanner = FileVaultScanner(
         directory=config.vault.directory,
         index=index,
     )
-    service = VaultService(repository=repository, index=index)
+    service = VaultService(
+        directory=config.vault.directory,
+        index=index,
+        scanner=scanner,
+    )
     return service, scanner
 
 

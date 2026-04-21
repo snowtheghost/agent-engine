@@ -46,12 +46,12 @@ def _build_parser() -> argparse.ArgumentParser:
     vault_search = vault_sub.add_parser("search", help="Semantic search the vault.")
     vault_search.add_argument("query")
     vault_search.add_argument("--limit", type=int, default=5)
+    vault_search.add_argument("--file", default=None)
 
-    vault_list = vault_sub.add_parser("list", help="List recent vault entries.")
-    vault_list.add_argument("--limit", type=int, default=20)
+    vault_recall = vault_sub.add_parser("recall", help="Show a vault file by path.")
+    vault_recall.add_argument("path")
 
-    vault_recall = vault_sub.add_parser("recall", help="Show a specific entry.")
-    vault_recall.add_argument("entry_id")
+    vault_sub.add_parser("list", help="List indexed vault file paths.")
 
     return parser
 
@@ -82,20 +82,26 @@ async def _run_prompt(
         shutdown_engine(engine)
 
 
-def _run_vault_search(cwd: Path, data_dir: Path | None, query: str, limit: int) -> int:
+def _run_vault_search(
+    cwd: Path,
+    data_dir: Path | None,
+    query: str,
+    limit: int,
+    file_filter: str | None,
+) -> int:
     from agent_engine.main import build_engine, shutdown_engine
 
     engine = build_engine(cwd=cwd, data_dir=data_dir)
     try:
-        hits = engine.vault_service.search(query, limit)
+        hits = engine.vault_service.search(query, limit, file_filter=file_filter)
         if not hits:
             print("No results.")
             return 0
         for hit in hits:
-            tags = ", ".join(hit.entry.tags) if hit.entry.tags else "-"
-            print(f"[{hit.score:.3f}] {hit.entry.entry_id}  {hit.entry.kind}  {hit.entry.title}")
+            tags = ", ".join(hit.chunk.tags) if hit.chunk.tags else "-"
+            print(f"[{hit.score:.3f}] {hit.chunk.file_path}  ({hit.chunk.heading})")
             print(f"    tags: {tags}")
-            preview = hit.entry.body.replace("\n", " ")[:200]
+            preview = hit.chunk.content.replace("\n", " ")[:240]
             print(f"    {preview}")
             print()
         return 0
@@ -103,38 +109,32 @@ def _run_vault_search(cwd: Path, data_dir: Path | None, query: str, limit: int) 
         shutdown_engine(engine)
 
 
-def _run_vault_list(cwd: Path, data_dir: Path | None, limit: int) -> int:
+def _run_vault_list(cwd: Path, data_dir: Path | None) -> int:
     from agent_engine.main import build_engine, shutdown_engine
 
     engine = build_engine(cwd=cwd, data_dir=data_dir)
     try:
-        entries = engine.vault_service.list(limit)
-        if not entries:
+        paths = sorted(engine.vault_service.files())
+        if not paths:
             print("Vault is empty.")
             return 0
-        for entry in entries:
-            print(f"{entry.entry_id}  {entry.kind}  {entry.title}")
+        for path in paths:
+            print(path)
         return 0
     finally:
         shutdown_engine(engine)
 
 
-def _run_vault_recall(cwd: Path, data_dir: Path | None, entry_id: str) -> int:
+def _run_vault_recall(cwd: Path, data_dir: Path | None, path: str) -> int:
     from agent_engine.main import build_engine, shutdown_engine
 
     engine = build_engine(cwd=cwd, data_dir=data_dir)
     try:
-        entry = engine.vault_service.recall(entry_id)
-        if entry is None:
-            sys.stderr.write(f"No entry with id {entry_id}\n")
+        body = engine.vault_service.recall(path)
+        if body is None:
+            sys.stderr.write(f"No vault file at {path}\n")
             return 1
-        print(f"Entry   : {entry.entry_id}")
-        print(f"Kind    : {entry.kind}")
-        print(f"Title   : {entry.title}")
-        print(f"Tags    : {', '.join(entry.tags) if entry.tags else '-'}")
-        print(f"Created : {entry.created_at.isoformat()}")
-        print()
-        print(entry.body)
+        print(body)
         return 0
     finally:
         shutdown_engine(engine)
@@ -152,11 +152,11 @@ def main(argv: list[str] | None = None) -> int:
         return asyncio.run(_run_prompt(cwd, data_dir, args.prompt, args.resume_key, args.model))
     if args.command == "vault":
         if args.vault_command == "search":
-            return _run_vault_search(cwd, data_dir, args.query, args.limit)
+            return _run_vault_search(cwd, data_dir, args.query, args.limit, args.file)
         if args.vault_command == "list":
-            return _run_vault_list(cwd, data_dir, args.limit)
+            return _run_vault_list(cwd, data_dir)
         if args.vault_command == "recall":
-            return _run_vault_recall(cwd, data_dir, args.entry_id)
+            return _run_vault_recall(cwd, data_dir, args.path)
 
     parser.print_help()
     return 1

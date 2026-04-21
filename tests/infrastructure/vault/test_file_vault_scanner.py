@@ -1,11 +1,7 @@
-from datetime import datetime, timezone
-
 import pytest
 
-from agent_engine.core.vault.model.entry import VaultEntry
-from agent_engine.infrastructure.vault.file_vault_repository import FileVaultRepository
 from agent_engine.infrastructure.vault.file_vault_scanner import FileVaultScanner
-from agent_engine.infrastructure.vault.in_memory_vector_index import InMemoryVectorIndex
+from agent_engine.infrastructure.vault.in_memory_vault_index import InMemoryVaultIndex
 
 
 @pytest.fixture()
@@ -15,109 +11,103 @@ def vault_dir(tmp_path):
     return directory
 
 
-def _entry(entry_id: str, body: str = "body") -> VaultEntry:
-    return VaultEntry(
-        entry_id=entry_id,
-        kind="note",
-        title=f"Title {entry_id}",
-        body=body,
-        tags=(),
-        created_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+def _write(directory, rel: str, body: str) -> None:
+    path = directory / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(body, encoding="utf-8")
+
+
+def test_scan_indexes_chunks_from_markdown_files(vault_dir):
+    _write(
+        vault_dir,
+        "a.md",
+        "## S1\nAuthentication oauth content long enough to chunk.\n",
     )
-
-
-def test_scan_indexes_all_markdown_files(vault_dir):
-    repository = FileVaultRepository(vault_dir)
-    for i in range(3):
-        repository.save(_entry(f"e{i}", body=f"body {i}"))
-
-    index = InMemoryVectorIndex()
+    _write(
+        vault_dir,
+        "Nested/b.md",
+        "## S2\nDatabase migration content long enough to chunk.\n",
+    )
+    index = InMemoryVaultIndex()
     scanner = FileVaultScanner(directory=vault_dir, index=index)
+
     report = scanner.scan()
 
-    assert report.indexed == 3
-    assert report.total == 3
-    assert index.ids() == {"e0", "e1", "e2"}
+    assert report.indexed_files == 2
+    assert report.total_files == 2
+    assert report.total_chunks >= 2
+    assert index.file_paths() == {"a.md", "Nested/b.md"}
 
 
 def test_scan_skips_unchanged_on_second_run(vault_dir):
-    repository = FileVaultRepository(vault_dir)
-    repository.save(_entry("e1"))
-
-    index = InMemoryVectorIndex()
+    _write(vault_dir, "a.md", "## S\nSome content long enough to become a chunk.\n")
+    index = InMemoryVaultIndex()
     scanner = FileVaultScanner(directory=vault_dir, index=index)
+
     first = scanner.scan()
     second = scanner.scan()
 
-    assert first.indexed == 1
-    assert second.indexed == 0
+    assert first.indexed_files == 1
+    assert second.indexed_files == 0
     assert second.skipped_unchanged == 1
 
 
 def test_scan_reindexes_when_file_changes(vault_dir):
-    repository = FileVaultRepository(vault_dir)
-    repository.save(_entry("e1", body="original"))
-
-    index = InMemoryVectorIndex()
+    _write(vault_dir, "a.md", "## S\nOriginal content long enough for chunking.\n")
+    index = InMemoryVaultIndex()
     scanner = FileVaultScanner(directory=vault_dir, index=index)
     scanner.scan()
 
-    repository.save(_entry("e1", body="updated content about oauth pkce"))
-    report = scanner.scan()
+    _write(vault_dir, "a.md", "## S\nUpdated content mentioning oauth pkce flows.\n")
+    scanner.scan()
 
-    assert report.indexed == 1
     hits = index.search("oauth", limit=5)
     assert hits
-    assert hits[0][0] == "e1"
+    assert hits[0][0].file_path == "a.md"
 
 
-def test_scan_removes_orphaned_index_entries(vault_dir):
-    repository = FileVaultRepository(vault_dir)
-    repository.save(_entry("e1"))
-    repository.save(_entry("e2"))
-
-    index = InMemoryVectorIndex()
+def test_scan_removes_chunks_when_file_deleted(vault_dir):
+    _write(vault_dir, "a.md", "## S\nKeep content long enough to chunk here please.\n")
+    _write(vault_dir, "b.md", "## S\nRemove content long enough to chunk here too.\n")
+    index = InMemoryVaultIndex()
     scanner = FileVaultScanner(directory=vault_dir, index=index)
     scanner.scan()
 
-    repository.delete("e2")
+    (vault_dir / "b.md").unlink()
     report = scanner.scan()
 
-    assert report.removed == 1
-    assert index.ids() == {"e1"}
+    assert report.removed_files == 1
+    assert index.file_paths() == {"a.md"}
 
 
-def test_force_rescans_everything(vault_dir):
-    repository = FileVaultRepository(vault_dir)
-    repository.save(_entry("e1"))
-
-    index = InMemoryVectorIndex()
+def test_force_reindexes_everything(vault_dir):
+    _write(vault_dir, "a.md", "## S\nContent long enough to chunk into a section.\n")
+    index = InMemoryVaultIndex()
     scanner = FileVaultScanner(directory=vault_dir, index=index)
+
     scanner.scan()
     report = scanner.scan(force=True)
 
-    assert report.indexed == 1
+    assert report.indexed_files == 1
     assert report.skipped_unchanged == 0
 
 
-def test_scan_ignores_hidden_files(vault_dir):
-    repository = FileVaultRepository(vault_dir)
-    repository.save(_entry("e1"))
-    (vault_dir / ".ignored.md").write_text("---\nid: x\nkind: y\ntitle: z\n---\n\nbody\n")
-
-    index = InMemoryVectorIndex()
+def test_scan_ignores_hidden_directories(vault_dir):
+    _write(vault_dir, "a.md", "## S\nVisible content long enough to chunk here.\n")
+    _write(vault_dir, ".store/b.md", "## S\nHidden content long enough to chunk.\n")
+    index = InMemoryVaultIndex()
     scanner = FileVaultScanner(directory=vault_dir, index=index)
     report = scanner.scan()
 
-    assert report.total == 1
-    assert index.ids() == {"e1"}
+    assert report.total_files == 1
+    assert index.file_paths() == {"a.md"}
 
 
 def test_scan_creates_directory_if_missing(tmp_path):
     directory = tmp_path / "absent"
-    index = InMemoryVectorIndex()
+    index = InMemoryVaultIndex()
     scanner = FileVaultScanner(directory=directory, index=index)
     report = scanner.scan()
 
     assert directory.exists()
-    assert report.total == 0
+    assert report.total_files == 0

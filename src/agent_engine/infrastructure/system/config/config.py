@@ -6,9 +6,6 @@ from typing import Any
 import yaml
 
 
-_DEFAULT_DATA_DIR = Path.home() / ".agent-engine"
-
-
 @dataclass(frozen=True)
 class DiscordConfig:
     token: str | None

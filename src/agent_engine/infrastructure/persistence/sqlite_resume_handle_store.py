@@ -1,5 +1,5 @@
 import sqlite3
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from agent_engine.application.run.service.resume_handle_store import ResumeHandleStore
 from agent_engine.core.run.model.resume_handle import ResumeHandle
@@ -20,7 +20,7 @@ class SqliteResumeHandleStore(ResumeHandleStore):
         return ResumeHandle(provider=row["provider"], session_id=row["session_id"])
 
     def put(self, resume_key: str, handle: ResumeHandle) -> None:
-        now = datetime.now(timezone.utc).isoformat()
+        now = datetime.now(UTC).isoformat()
         self._connection.execute(
             """
             INSERT INTO resume_handles (resume_key, provider, session_id, updated_at)
