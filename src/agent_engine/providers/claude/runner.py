@@ -153,24 +153,23 @@ class ClaudeCodeRunner:
         self,
         *,
         cwd: str,
-        default_model: str | None,
+        model: str,
+        effort: str,
         mcp_servers: dict[str, Any],
-        timezone: str = "UTC",
-        max_buffer_size: int = 100_000_000,
-        betas: tuple[str, ...] = (),
+        timezone: str,
     ) -> None:
         self._cwd = cwd
-        self._default_model = default_model
+        self._model = model
+        self._effort = effort
         self._mcp_servers = mcp_servers
         self._timezone = timezone
-        self._max_buffer_size = max_buffer_size
-        self._betas = list(betas)
         self._process_manager = ProcessManager()
         self._state_tracker = SessionStateTracker()
         logger.info(
             "claude_runner_initialized",
             cwd=cwd,
-            default_model=default_model,
+            model=model,
+            effort=effort,
             mcp_servers=list(mcp_servers.keys()),
         )
 
@@ -204,8 +203,6 @@ class ClaudeCodeRunner:
         allowed_tools = [f"mcp__{name}" for name in mcp_servers]
         return ClaudeAgentOptions(
             model=model,
-            max_buffer_size=self._max_buffer_size,
-            betas=list(self._betas),
             mcp_servers=mcp_servers,
             cwd=self._cwd,
             permission_mode="bypassPermissions",
@@ -216,7 +213,7 @@ class ClaudeCodeRunner:
             disallowed_tools=_DISALLOWED_BUILTIN_TOOLS,
             stderr=lambda line: logger.debug("cli_stderr", output=line),
             thinking={"type": "adaptive"},
-            effort="max",
+            effort=self._effort,
             skills="all",
         )
 
@@ -275,11 +272,18 @@ class ClaudeCodeRunner:
                 if message.session_id:
                     self._state_tracker.track(run_id, message.session_id)
             elif isinstance(message, SystemMessage):
-                logger.debug(
-                    "system_message",
-                    subtype=message.subtype,
-                    data=str(message.data)[:_LOG_PREVIEW_LENGTH],
-                )
+                if message.subtype == "compact_boundary":
+                    logger.info(
+                        "context_compacted",
+                        run_id=run_id,
+                        data=str(message.data)[:_LOG_PREVIEW_LENGTH],
+                    )
+                else:
+                    logger.debug(
+                        "system_message",
+                        subtype=message.subtype,
+                        data=str(message.data)[:_LOG_PREVIEW_LENGTH],
+                    )
 
         if state.used_task_tool:
             pid = get_sdk_process_pid(client)
@@ -385,7 +389,7 @@ class ClaudeCodeRunner:
         model: str | None,
     ) -> RunResult:
         start_time = time.time()
-        resolved_model = model or self._default_model or "claude-sonnet-4-5"
+        resolved_model = model or self._model
         resume_session_id = resume_handle.session_id if resume_handle else None
 
         logger.info(

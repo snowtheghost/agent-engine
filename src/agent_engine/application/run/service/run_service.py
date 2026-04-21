@@ -21,21 +21,30 @@ class RunService:
 
     def __init__(
         self,
-        runner: Runner,
+        runners: dict[str, Runner],
+        default_provider: str,
         resume_handles: ResumeHandleStore,
         thread_service: ThreadService | None = None,
     ) -> None:
-        self._runner = runner
+        if default_provider not in runners:
+            raise ValueError(
+                f"default_provider {default_provider!r} is not in runners "
+                f"{tuple(runners.keys())}"
+            )
+        self._runners = runners
+        self._default_provider = default_provider
         self._resume_handles = resume_handles
         self._thread_service = thread_service
         self._active_by_key: dict[str, str] = {}
         self._drainer_active_keys: set[str] = set()
+        self._runner_by_run_id: dict[str, Runner] = {}
 
     async def dispatch(
         self,
         prompt: str,
         *,
         resume_key: str | None = None,
+        provider: str | None = None,
         model: str | None = None,
     ) -> RunResult | None:
         if resume_key is not None and self._thread_service is not None:
@@ -43,9 +52,12 @@ class RunService:
                 resume_key=resume_key,
                 author=INTEGRATION_AUTHOR,
                 content=prompt,
+                provider=provider,
                 model=model,
             )
-        return await self._execute(prompt, resume_key=resume_key, model=model)
+        return await self._execute(
+            prompt, resume_key=resume_key, provider=provider, model=model
+        )
 
     async def submit_message(
         self,
@@ -54,6 +66,7 @@ class RunService:
         author: str,
         content: str,
         attachments: Iterable[AttachmentMetadata] = (),
+        provider: str | None = None,
         model: str | None = None,
     ) -> RunResult | None:
         if self._thread_service is None:
@@ -73,11 +86,16 @@ class RunService:
 
         self._drainer_active_keys.add(resume_key)
         try:
-            return await self._drain(resume_key, model)
+            return await self._drain(resume_key, provider, model)
         finally:
             self._drainer_active_keys.discard(resume_key)
 
-    async def _drain(self, resume_key: str, model: str | None) -> RunResult | None:
+    async def _drain(
+        self,
+        resume_key: str,
+        provider: str | None,
+        model: str | None,
+    ) -> RunResult | None:
         if self._thread_service is None:
             return None
         last_result: RunResult | None = None
@@ -86,29 +104,55 @@ class RunService:
             if pending is None:
                 return last_result
             prompt, cursor = pending
-            last_result = await self._execute(prompt, resume_key=resume_key, model=model)
+            last_result = await self._execute(
+                prompt, resume_key=resume_key, provider=provider, model=model
+            )
             if last_result.summary:
                 self._thread_service.log_reply(resume_key, last_result.summary)
             self._thread_service.acknowledge(resume_key, cursor)
+
+    def _resolve_runner(
+        self,
+        resume_key: str | None,
+        provider: str | None,
+    ) -> tuple[Runner, object | None]:
+        existing_handle = (
+            self._resume_handles.get(resume_key) if resume_key is not None else None
+        )
+        if existing_handle is not None:
+            runner = self._runners.get(existing_handle.provider)
+            if runner is None:
+                raise ValueError(
+                    f"resume handle references unconfigured provider "
+                    f"{existing_handle.provider!r}; configured: {tuple(self._runners)}"
+                )
+            return runner, existing_handle
+
+        provider_name = provider or self._default_provider
+        runner = self._runners.get(provider_name)
+        if runner is None:
+            raise ValueError(
+                f"unknown provider {provider_name!r}; configured: {tuple(self._runners)}"
+            )
+        return runner, None
 
     async def _execute(
         self,
         prompt: str,
         *,
         resume_key: str | None,
+        provider: str | None,
         model: str | None,
     ) -> RunResult:
+        runner, existing_handle = self._resolve_runner(resume_key, provider)
         run_id = str(uuid.uuid4())
-        existing_handle = (
-            self._resume_handles.get(resume_key) if resume_key is not None else None
-        )
 
         logger.info(
             "run_dispatch",
             run_id=run_id,
             resume_key=resume_key,
             resuming=existing_handle is not None,
-            provider=self._runner.provider_name,
+            provider=runner.provider_name,
             model=model,
             prompt_preview=prompt[:120],
             started_at=datetime.now(UTC).isoformat(),
@@ -118,9 +162,10 @@ class RunService:
             await self._interrupt_active_run(resume_key)
         if resume_key is not None:
             self._active_by_key[resume_key] = run_id
+        self._runner_by_run_id[run_id] = runner
 
         try:
-            result = await self._runner.run(
+            result = await runner.run(
                 prompt,
                 run_id=run_id,
                 resume_handle=existing_handle,
@@ -129,6 +174,7 @@ class RunService:
         finally:
             if resume_key is not None:
                 self._active_by_key.pop(resume_key, None)
+            self._runner_by_run_id.pop(run_id, None)
 
         if resume_key is not None and result.resume_handle is not None:
             self._resume_handles.put(resume_key, result.resume_handle)
@@ -144,24 +190,29 @@ class RunService:
         )
         return result
 
+    def _runner_for_run_id(self, run_id: str) -> Runner | None:
+        return self._runner_by_run_id.get(run_id)
+
     async def _signal_interrupt(self, resume_key: str) -> None:
         active_run_id = self._active_by_key.get(resume_key)
         if active_run_id is None:
             return
-        if not self._runner.is_running(active_run_id):
+        runner = self._runner_for_run_id(active_run_id)
+        if runner is None or not runner.is_running(active_run_id):
             return
         logger.info(
             "signalling_interrupt",
             resume_key=resume_key,
             run_id=active_run_id,
         )
-        await self._runner.interrupt(active_run_id)
+        await runner.interrupt(active_run_id)
 
     async def _interrupt_active_run(self, resume_key: str) -> None:
         active_run_id = self._active_by_key.get(resume_key)
         if active_run_id is None:
             return
-        if not self._runner.is_running(active_run_id):
+        runner = self._runner_for_run_id(active_run_id)
+        if runner is None or not runner.is_running(active_run_id):
             self._active_by_key.pop(resume_key, None)
             return
 
@@ -170,10 +221,10 @@ class RunService:
             resume_key=resume_key,
             run_id=active_run_id,
         )
-        await self._runner.interrupt(active_run_id)
+        await runner.interrupt(active_run_id)
 
         deadline = asyncio.get_running_loop().time() + _INTERRUPT_WAIT_TIMEOUT
-        while self._runner.is_running(active_run_id):
+        while runner.is_running(active_run_id):
             remaining = deadline - asyncio.get_running_loop().time()
             if remaining <= 0:
                 logger.warning(
@@ -187,13 +238,25 @@ class RunService:
         self._active_by_key.pop(resume_key, None)
 
     async def interrupt(self, run_id: str) -> bool:
-        return await self._runner.interrupt(run_id)
+        runner = self._runner_for_run_id(run_id)
+        if runner is None:
+            for candidate in self._runners.values():
+                if candidate.is_running(run_id):
+                    return await candidate.interrupt(run_id)
+            return False
+        return await runner.interrupt(run_id)
 
     def active_run_ids(self) -> set[str]:
-        return self._runner.active_run_ids()
+        ids: set[str] = set()
+        for runner in self._runners.values():
+            ids.update(runner.active_run_ids())
+        return ids
 
     def is_running(self, run_id: str) -> bool:
-        return self._runner.is_running(run_id)
+        runner = self._runner_for_run_id(run_id)
+        if runner is not None:
+            return runner.is_running(run_id)
+        return any(r.is_running(run_id) for r in self._runners.values())
 
     def clear_resume(self, resume_key: str) -> None:
         self._resume_handles.clear(resume_key)

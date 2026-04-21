@@ -30,7 +30,6 @@ from agent_engine.integrations.http.server import HttpIntake, build_app
 from agent_engine.integrations.skills.installer import install_bundled_skills
 from agent_engine.integrations.watcher.vault_watcher import VaultWatcher
 from agent_engine.providers.claude.runner import ClaudeCodeRunner
-from agent_engine.providers.codex.runner import CodexRunner
 from agent_engine.tools.thread_tools import build_thread_mcp_server
 from agent_engine.tools.vault_tools import build_vault_mcp_server
 
@@ -78,31 +77,27 @@ def _build_vault(config: EngineConfig) -> tuple[VaultService, VaultScanner]:
     return service, scanner
 
 
-def _build_runner(
+def _build_runners(
     config: EngineConfig,
     vault_service: VaultService,
     thread_service: ThreadService,
-) -> Runner:
-    name = config.provider.name
-    if name == "claude":
-        mcp_servers = {
-            "vault": build_vault_mcp_server(vault_service),
-            "thread": build_thread_mcp_server(thread_service),
-        }
-        timezone = config.provider.options.get("timezone", "UTC")
-        max_buffer_size = int(config.provider.options.get("max_buffer_size", 100_000_000))
-        betas = tuple(config.provider.options.get("betas", []) or ())
-        return ClaudeCodeRunner(
+) -> dict[str, Runner]:
+    mcp_servers = {
+        "vault": build_vault_mcp_server(vault_service),
+        "thread": build_thread_mcp_server(thread_service),
+    }
+    runners: dict[str, Runner] = {}
+    if config.providers.claude is not None:
+        runners["claude"] = ClaudeCodeRunner(
             cwd=str(config.cwd),
-            default_model=config.provider.model,
+            model=config.providers.claude.model,
+            effort=config.providers.claude.effort,
             mcp_servers=mcp_servers,
-            timezone=timezone,
-            max_buffer_size=max_buffer_size,
-            betas=betas,
+            timezone=config.timezone,
         )
-    if name == "codex":
-        return CodexRunner()
-    raise ValueError(f"Unknown provider: {name}")
+    if not runners:
+        raise ValueError("no providers configured; at least one is required")
+    return runners
 
 
 def build_engine(cwd: Path, data_dir: Path | None = None) -> Engine:
@@ -123,10 +118,11 @@ def build_engine(cwd: Path, data_dir: Path | None = None) -> Engine:
     )
     thread_service = ThreadService(repository=thread_repository)
 
-    runner = _build_runner(config, vault_service, thread_service)
+    runners = _build_runners(config, vault_service, thread_service)
     resume_store = SqliteResumeHandleStore(connection)
     run_service = RunService(
-        runner=runner,
+        runners=runners,
+        default_provider=config.default_provider,
         resume_handles=resume_store,
         thread_service=thread_service,
     )
@@ -134,8 +130,8 @@ def build_engine(cwd: Path, data_dir: Path | None = None) -> Engine:
     logger.info(
         "engine_built",
         cwd=str(config.cwd),
-        provider=config.provider.name,
-        model=config.provider.model,
+        providers=sorted(runners.keys()),
+        default_provider=config.default_provider,
     )
     return Engine(
         config=config,

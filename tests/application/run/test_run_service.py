@@ -11,7 +11,7 @@ from agent_engine.application.thread.service.thread_service import (
 )
 from agent_engine.core.run.model.resume_handle import ResumeHandle
 from agent_engine.core.run.model.run_result import RunResult
-from agent_engine.core.thread.model.thread import Thread, ThreadEntry
+from agent_engine.core.thread.model.thread import Thread
 
 
 class InMemoryThreadRepository(ThreadRepository):
@@ -50,6 +50,15 @@ class InMemoryResumeStore(ResumeHandleStore):
 
     def clear(self, resume_key):
         self.storage.pop(resume_key, None)
+
+
+def _make_service(runner, resume_handles, thread_service=None):
+    return RunService(
+        runners={runner.provider_name: runner},
+        default_provider=runner.provider_name,
+        resume_handles=resume_handles,
+        thread_service=thread_service,
+    )
 
 
 class FakeRunner:
@@ -160,7 +169,7 @@ class SlowRunner:
 async def test_dispatch_first_call_no_resume_handle():
     store = InMemoryResumeStore()
     runner = FakeRunner()
-    service = RunService(runner=runner, resume_handles=store)
+    service = _make_service(runner, store)
 
     result = await service.dispatch("hi", resume_key="k1")
     assert result.success
@@ -173,7 +182,7 @@ async def test_dispatch_first_call_no_resume_handle():
 async def test_dispatch_second_call_uses_stored_handle():
     store = InMemoryResumeStore()
     runner = FakeRunner(session_ids=["sess-1", "sess-2"])
-    service = RunService(runner=runner, resume_handles=store)
+    service = _make_service(runner, store)
 
     await service.dispatch("hi", resume_key="k1")
     await service.dispatch("again", resume_key="k1")
@@ -187,7 +196,7 @@ async def test_dispatch_second_call_uses_stored_handle():
 async def test_dispatch_without_resume_key_does_not_persist():
     store = InMemoryResumeStore()
     runner = FakeRunner()
-    service = RunService(runner=runner, resume_handles=store)
+    service = _make_service(runner, store)
 
     await service.dispatch("hi")
     assert store.storage == {}
@@ -197,7 +206,7 @@ async def test_dispatch_without_resume_key_does_not_persist():
 async def test_clear_resume_removes_handle():
     store = InMemoryResumeStore()
     runner = FakeRunner()
-    service = RunService(runner=runner, resume_handles=store)
+    service = _make_service(runner, store)
 
     await service.dispatch("hi", resume_key="k1")
     service.clear_resume("k1")
@@ -210,7 +219,7 @@ class TestInterrupt:
         store = InMemoryResumeStore()
         runner = FakeRunner()
         runner._active.add("run-1")
-        service = RunService(runner=runner, resume_handles=store)
+        service = _make_service(runner, store)
 
         result = await service.interrupt("run-1")
         assert result is True
@@ -219,7 +228,7 @@ class TestInterrupt:
     async def test_interrupt_returns_false_for_unknown_run(self) -> None:
         store = InMemoryResumeStore()
         runner = FakeRunner()
-        service = RunService(runner=runner, resume_handles=store)
+        service = _make_service(runner, store)
 
         result = await service.interrupt("nonexistent")
         assert result is False
@@ -228,7 +237,7 @@ class TestInterrupt:
         store = InMemoryResumeStore()
         runner = FakeRunner()
         runner._active.update({"run-1", "run-2"})
-        service = RunService(runner=runner, resume_handles=store)
+        service = _make_service(runner, store)
 
         assert service.active_run_ids() == {"run-1", "run-2"}
 
@@ -236,7 +245,7 @@ class TestInterrupt:
         store = InMemoryResumeStore()
         runner = FakeRunner()
         runner._active.add("run-1")
-        service = RunService(runner=runner, resume_handles=store)
+        service = _make_service(runner, store)
 
         assert service.is_running("run-1") is True
         assert service.is_running("run-2") is False
@@ -247,7 +256,7 @@ class TestDispatchInterruptsActiveRun:
     async def test_interrupts_active_run_before_dispatching_new(self) -> None:
         runner = SlowRunner()
         store = InMemoryResumeStore()
-        service = RunService(runner=runner, resume_handles=store)
+        service = _make_service(runner, store)
 
         first_dispatch = asyncio.create_task(
             service.dispatch("first", resume_key="k1")
@@ -289,7 +298,7 @@ class TestDispatchInterruptsActiveRun:
     async def test_no_interrupt_when_no_active_run(self) -> None:
         runner = FakeRunner()
         store = InMemoryResumeStore()
-        service = RunService(runner=runner, resume_handles=store)
+        service = _make_service(runner, store)
 
         await service.dispatch("first", resume_key="k1")
         await service.dispatch("second", resume_key="k1")
@@ -301,7 +310,7 @@ class TestDispatchInterruptsActiveRun:
     async def test_dispatch_without_resume_key_does_not_track(self) -> None:
         runner = FakeRunner()
         store = InMemoryResumeStore()
-        service = RunService(runner=runner, resume_handles=store)
+        service = _make_service(runner, store)
 
         await service.dispatch("a")
         await service.dispatch("b")
@@ -312,7 +321,7 @@ class TestDispatchInterruptsActiveRun:
     async def test_active_run_cleared_after_dispatch_completes(self) -> None:
         runner = FakeRunner()
         store = InMemoryResumeStore()
-        service = RunService(runner=runner, resume_handles=store)
+        service = _make_service(runner, store)
 
         await service.dispatch("hi", resume_key="k1")
         assert "k1" not in service._active_by_key
@@ -326,11 +335,7 @@ class TestSubmitMessage:
         thread_service = ThreadService(repository)
         runner = FakeRunner()
         store = InMemoryResumeStore()
-        service = RunService(
-            runner=runner,
-            resume_handles=store,
-            thread_service=thread_service,
-        )
+        service = _make_service(runner, store, thread_service)
 
         result = await service.submit_message(
             resume_key="k1",
@@ -351,11 +356,7 @@ class TestSubmitMessage:
         thread_service = ThreadService(repository)
         runner = SlowRunner()
         store = InMemoryResumeStore()
-        service = RunService(
-            runner=runner,
-            resume_handles=store,
-            thread_service=thread_service,
-        )
+        service = _make_service(runner, store, thread_service)
 
         first = asyncio.create_task(
             service.submit_message(resume_key="k1", author="alice", content="first")
@@ -399,11 +400,7 @@ class TestSubmitMessage:
         thread_service = ThreadService(repository)
         runner = FakeRunner()
         store = InMemoryResumeStore()
-        service = RunService(
-            runner=runner,
-            resume_handles=store,
-            thread_service=thread_service,
-        )
+        service = _make_service(runner, store, thread_service)
 
         await service.submit_message(resume_key="k1", author="alice", content="hi")
 
@@ -421,11 +418,7 @@ class TestSubmitMessage:
         thread_service = ThreadService(repository)
         runner = FakeRunner()
         store = InMemoryResumeStore()
-        service = RunService(
-            runner=runner,
-            resume_handles=store,
-            thread_service=thread_service,
-        )
+        service = _make_service(runner, store, thread_service)
 
         result = await service.dispatch("hello", resume_key="k1")
         assert result is not None
@@ -437,7 +430,7 @@ class TestSubmitMessage:
     async def test_submit_message_without_thread_service_raises(self) -> None:
         store = InMemoryResumeStore()
         runner = FakeRunner()
-        service = RunService(runner=runner, resume_handles=store)
+        service = _make_service(runner, store)
         with pytest.raises(RuntimeError):
             await service.submit_message(
                 resume_key="k1", author="alice", content="hi"

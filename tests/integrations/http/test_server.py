@@ -8,7 +8,7 @@ from agent_engine.application.thread.service.thread_service import ThreadService
 from agent_engine.application.vault.service.vault_service import VaultService
 from agent_engine.core.run.model.resume_handle import ResumeHandle
 from agent_engine.core.run.model.run_result import RunResult
-from agent_engine.core.thread.model.thread import Thread, ThreadEntry
+from agent_engine.core.thread.model.thread import Thread
 from agent_engine.infrastructure.vault.file_vault_scanner import FileVaultScanner
 from agent_engine.infrastructure.vault.in_memory_vault_index import InMemoryVaultIndex
 from agent_engine.integrations.http.server import build_app
@@ -89,8 +89,10 @@ def client(tmp_path):
     vault = VaultService(directory=directory, index=index, scanner=scanner)
     thread_repository = InMemoryThreadRepository()
     thread_service = ThreadService(repository=thread_repository)
+    stub_runner = StubRunner()
     run_service = RunService(
-        runner=StubRunner(),
+        runners={stub_runner.provider_name: stub_runner},
+        default_provider=stub_runner.provider_name,
         resume_handles=InMemoryStore(),
         thread_service=thread_service,
     )
@@ -211,7 +213,8 @@ def trackable_client(tmp_path):
     thread_repository = InMemoryThreadRepository()
     thread_service = ThreadService(repository=thread_repository)
     run_service = RunService(
-        runner=runner,
+        runners={runner.provider_name: runner},
+        default_provider=runner.provider_name,
         resume_handles=InMemoryStore(),
         thread_service=thread_service,
     )

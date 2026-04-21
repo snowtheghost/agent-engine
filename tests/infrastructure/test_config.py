@@ -12,7 +12,10 @@ def test_load_config_uses_defaults(tmp_path, monkeypatch):
 
     config = load_config(project)
     assert config.cwd == project.resolve()
-    assert config.provider.name == "claude"
+    assert config.default_provider == "claude"
+    assert config.providers.claude is not None
+    assert config.providers.claude.model == "opus"
+    assert config.providers.claude.effort == "max"
     assert config.http.port == 8938
     assert config.discord.token is None
 
@@ -23,7 +26,7 @@ def test_data_dir_config_overrides(tmp_path, monkeypatch):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     (data_dir / "config.yaml").write_text(
-        "provider:\n  name: claude\n  model: opus\nhttp:\n  port: 9999\n"
+        "providers:\n  claude:\n    model: sonnet\n    effort: high\nhttp:\n  port: 9999\n"
     )
 
     project = tmp_path / "proj"
@@ -31,7 +34,9 @@ def test_data_dir_config_overrides(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
 
     config = load_config(project, data_dir=data_dir)
-    assert config.provider.model == "opus"
+    assert config.providers.claude is not None
+    assert config.providers.claude.model == "sonnet"
+    assert config.providers.claude.effort == "high"
     assert config.http.port == 9999
     assert config.data_dir == data_dir.resolve()
 
@@ -40,7 +45,7 @@ def test_default_data_dir_uses_home(tmp_path, monkeypatch):
     home = tmp_path / "home"
     (home / ".agent-engine").mkdir(parents=True)
     (home / ".agent-engine" / "config.yaml").write_text(
-        "provider:\n  model: sonnet\n"
+        "providers:\n  claude:\n    model: sonnet\n    effort: low\n"
     )
     monkeypatch.setenv("HOME", str(home))
 
@@ -48,7 +53,53 @@ def test_default_data_dir_uses_home(tmp_path, monkeypatch):
     project.mkdir()
 
     config = load_config(project)
-    assert config.provider.model == "sonnet"
+    assert config.providers.claude is not None
+    assert config.providers.claude.model == "sonnet"
+
+
+def test_null_model_raises(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".agent-engine").mkdir(parents=True)
+    (home / ".agent-engine" / "config.yaml").write_text(
+        "providers:\n  claude:\n    model: null\n    effort: max\n"
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    with pytest.raises(ValueError, match="providers.claude.model"):
+        load_config(project)
+
+
+def test_invalid_effort_raises(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".agent-engine").mkdir(parents=True)
+    (home / ".agent-engine" / "config.yaml").write_text(
+        "providers:\n  claude:\n    model: opus\n    effort: ludicrous\n"
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    with pytest.raises(ValueError, match="providers.claude.effort"):
+        load_config(project)
+
+
+def test_default_provider_must_be_configured(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    (home / ".agent-engine").mkdir(parents=True)
+    (home / ".agent-engine" / "config.yaml").write_text(
+        "default_provider: chatgpt\n"
+    )
+    monkeypatch.setenv("HOME", str(home))
+
+    project = tmp_path / "proj"
+    project.mkdir()
+
+    with pytest.raises(ValueError, match="default_provider"):
+        load_config(project)
 
 
 def test_env_overrides(tmp_path, monkeypatch):

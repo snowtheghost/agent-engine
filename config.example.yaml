@@ -1,10 +1,10 @@
-provider:
-  name: claude
-  model: null
-  options:
-    timezone: UTC
-    max_buffer_size: 100000000
-    betas: []
+providers:
+  claude:
+    model: opus
+    effort: max
+
+default_provider: claude
+timezone: UTC
 
 vault:
   # directory: /path/to/vault  # defaults to data_dir

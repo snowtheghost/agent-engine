@@ -16,6 +16,7 @@ logger = structlog.get_logger(__name__)
 class DispatchRequest(BaseModel):
     prompt: str
     resume_key: str | None = None
+    provider: str | None = None
     model: str | None = None
 
 
@@ -34,6 +35,7 @@ class DispatchResponse(BaseModel):
 class ThreadMessageRequest(BaseModel):
     author: str
     content: str
+    provider: str | None = None
 
 
 class VaultSearchResponse(BaseModel):
@@ -68,6 +70,7 @@ def build_app(
         result = await run_service.dispatch(
             request.prompt,
             resume_key=request.resume_key,
+            provider=request.provider,
             model=request.model,
         )
         if result is None:
@@ -96,6 +99,7 @@ def build_app(
             resume_key=resume_key,
             author=request.author,
             content=request.content,
+            provider=request.provider,
         )
         if result is None:
             return None

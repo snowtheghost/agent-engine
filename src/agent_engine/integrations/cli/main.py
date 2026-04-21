@@ -46,6 +46,7 @@ def _build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="Dispatch a single prompt and print the summary.")
     run.add_argument("--prompt", required=True, help="Prompt to send to the agent.")
     run.add_argument("--resume-key", default=None, help="Optional resume key.")
+    run.add_argument("--provider", default=None, help="Provider override (e.g. 'claude').")
     run.add_argument("--model", default=None, help="Model override.")
 
     vault = subparsers.add_parser("vault", help="Vault operations.")
@@ -91,14 +92,19 @@ async def _run_serve(
 
 
 async def _run_prompt(
-    cwd: Path, data_dir: Path | None, prompt: str, resume_key: str | None, model: str | None
+    cwd: Path,
+    data_dir: Path | None,
+    prompt: str,
+    resume_key: str | None,
+    provider: str | None,
+    model: str | None,
 ) -> int:
     from agent_engine.main import build_engine, shutdown_engine
 
     engine = build_engine(cwd=cwd, data_dir=data_dir)
     try:
         result = await engine.run_service.dispatch(
-            prompt, resume_key=resume_key, model=model
+            prompt, resume_key=resume_key, provider=provider, model=model
         )
         if result is None:
             print("(queued — active run in progress)")
@@ -224,7 +230,11 @@ def main(argv: list[str] | None = None) -> int:
             _run_serve(cwd, data_dir, args.no_discord, args.no_http, args.no_watcher)
         )
     if args.command == "run":
-        return asyncio.run(_run_prompt(cwd, data_dir, args.prompt, args.resume_key, args.model))
+        return asyncio.run(
+            _run_prompt(
+                cwd, data_dir, args.prompt, args.resume_key, args.provider, args.model
+            )
+        )
     if args.command == "vault":
         if args.vault_command == "search":
             return _run_vault_search(cwd, data_dir, args.query, args.limit, args.file)

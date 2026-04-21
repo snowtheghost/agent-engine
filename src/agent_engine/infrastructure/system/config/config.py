@@ -1,9 +1,12 @@
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
+
+Effort = Literal["low", "medium", "high", "xhigh", "max"]
+_VALID_EFFORTS: tuple[Effort, ...] = ("low", "medium", "high", "xhigh", "max")
 
 
 @dataclass(frozen=True)
@@ -27,17 +30,34 @@ class VaultConfig:
 
 
 @dataclass(frozen=True)
-class ProviderConfig:
-    name: str
-    model: str | None
-    options: dict[str, Any] = field(default_factory=dict)
+class ClaudeConfig:
+    model: str
+    effort: Effort
+
+
+@dataclass(frozen=True)
+class ProvidersConfig:
+    claude: ClaudeConfig | None = None
+
+    def get(self, name: str) -> ClaudeConfig | None:
+        if name == "claude":
+            return self.claude
+        return None
+
+    def configured_names(self) -> tuple[str, ...]:
+        names: list[str] = []
+        if self.claude is not None:
+            names.append("claude")
+        return tuple(names)
 
 
 @dataclass(frozen=True)
 class EngineConfig:
     cwd: Path
     data_dir: Path
-    provider: ProviderConfig
+    providers: ProvidersConfig
+    default_provider: str
+    timezone: str
     vault: VaultConfig
     discord: DiscordConfig
     http: HttpConfig
@@ -49,7 +69,14 @@ class EngineConfig:
 
 
 _DEFAULTS: dict[str, Any] = {
-    "provider": {"name": "claude", "model": None, "options": {}},
+    "providers": {
+        "claude": {
+            "model": "opus",
+            "effort": "max",
+        },
+    },
+    "default_provider": "claude",
+    "timezone": "UTC",
     "vault": {},
     "discord": {"token": None, "channel_id": None, "character_limit": 2000, "history_limit": 50},
     "http": {"host": "127.0.0.1", "port": 8938, "enabled": True},
@@ -100,6 +127,30 @@ def _env_overrides() -> dict[str, Any]:
     return overrides
 
 
+def _build_claude_config(raw: dict[str, Any]) -> ClaudeConfig:
+    model = raw.get("model")
+    if not isinstance(model, str) or not model:
+        raise ValueError(
+            "providers.claude.model must be a non-empty string (e.g. 'opus'); null is not permitted"
+        )
+
+    effort = raw.get("effort")
+    if effort not in _VALID_EFFORTS:
+        raise ValueError(
+            f"providers.claude.effort must be one of {_VALID_EFFORTS}, got {effort!r}"
+        )
+
+    return ClaudeConfig(model=model, effort=effort)
+
+
+def _build_providers_config(raw: dict[str, Any]) -> ProvidersConfig:
+    if not isinstance(raw, dict):
+        raise ValueError("providers must be a mapping")
+    claude_raw = raw.get("claude")
+    claude = _build_claude_config(claude_raw) if claude_raw is not None else None
+    return ProvidersConfig(claude=claude)
+
+
 def load_config(cwd: Path | str, data_dir: Path | str | None = None) -> EngineConfig:
     cwd_path = Path(cwd).resolve()
     if not cwd_path.is_dir():
@@ -113,12 +164,21 @@ def load_config(cwd: Path | str, data_dir: Path | str | None = None) -> EngineCo
     merged = _merge(_DEFAULTS, _load_yaml(config_path))
     merged = _merge(merged, _env_overrides())
 
-    provider_raw = merged["provider"]
-    provider = ProviderConfig(
-        name=provider_raw["name"],
-        model=provider_raw.get("model"),
-        options=provider_raw.get("options", {}) or {},
-    )
+    providers = _build_providers_config(merged["providers"])
+
+    default_provider = merged["default_provider"]
+    if not isinstance(default_provider, str) or not default_provider:
+        raise ValueError("default_provider must be a non-empty string")
+    if providers.get(default_provider) is None:
+        configured = providers.configured_names()
+        raise ValueError(
+            f"default_provider {default_provider!r} has no configuration; "
+            f"configured providers: {configured}"
+        )
+
+    timezone = merged["timezone"]
+    if not isinstance(timezone, str) or not timezone:
+        raise ValueError("timezone must be a non-empty string")
 
     vault_directory_raw = merged["vault"].get("directory")
     vault_directory = Path(vault_directory_raw).resolve() if vault_directory_raw else data_dir_path
@@ -147,7 +207,9 @@ def load_config(cwd: Path | str, data_dir: Path | str | None = None) -> EngineCo
     return EngineConfig(
         cwd=cwd_path,
         data_dir=data_dir_path,
-        provider=provider,
+        providers=providers,
+        default_provider=default_provider,
+        timezone=timezone,
         vault=vault,
         discord=discord,
         http=http,
