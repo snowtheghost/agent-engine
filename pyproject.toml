@@ -44,6 +44,9 @@ agent-engine = "agent_engine.integrations.cli.main:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"agent_engine.integrations.skills.bundled" = ["**/SKILL.md"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

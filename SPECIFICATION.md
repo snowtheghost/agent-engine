@@ -49,6 +49,9 @@ src/agent_engine/
 │   ├── discord/bot.py               # DiscordIntake
 │   ├── http/server.py               # HttpIntake + FastAPI app
 │   ├── watcher/vault_watcher.py     # VaultWatcher (filesystem → ingest/evict)
+│   ├── skills/installer.py          # bundle skills into cwd/.claude/skills/
+│   ├── skills/bundled/remember/SKILL.md
+│   ├── skills/bundled/recall/SKILL.md
 │   └── cli/main.py                  # CLI entrypoint
 ├── providers/
 │   ├── claude/
@@ -192,6 +195,20 @@ The vault is a directory of free-form markdown files. Files are the source of tr
 - `tools/vault_tools.py` wraps the service as three MCP tools (`vault_write`, `vault_search`, `vault_recall`) and returns an `McpSdkServerConfig` via `build_vault_mcp_server(vault_service)`.
 - `vault_search` output includes the file path, heading, and score for each chunk.
 
+### Skills
+
+Tools expose raw capability; skills expose policy. The engine bundles skill definitions inside the package and materializes them into `{cwd}/.claude/skills/{name}/SKILL.md` at startup so the Claude SDK discovers them through its existing `project` setting source.
+
+- `integrations/skills/installer.py` defines `install_bundled_skills(cwd)`. Reads `SKILL.md` files from the `agent_engine.integrations.skills.bundled` package resources, writes them into `{cwd}/.claude/skills/{name}/SKILL.md`. Idempotent: unchanged content is left alone, drifted content is overwritten.
+- `build_engine(cwd)` calls the installer after the startup vault scan.
+- `ClaudeCodeRunner` sets `skills="all"` on `ClaudeAgentOptions` so every discovered skill is loaded into the agent.
+
+Bundled skills:
+- `remember` — save factual knowledge. Reads the vault routing map (`Index.md`), dedupes against existing files, updates or writes through `vault_write`.
+- `recall` — search the vault semantically before answering. Uses `vault_search` and `vault_recall`, triangulates across multiple queries.
+
+Packaging: `pyproject.toml` includes `tool.setuptools.package-data = { "agent_engine.integrations.skills.bundled" = ["**/SKILL.md"] }` so the markdown ships with the wheel.
+
 ## Resume handles
 
 - `ResumeHandle(provider: str, session_id: str)`.
@@ -265,7 +282,7 @@ Sessions can be cancelled mid-run via `Runner.interrupt(run_id)`. The flow:
 
 `main.run_engine(cwd, data_dir, disable_discord, disable_http, disable_watcher)`:
 
-1. `build_engine(cwd)` — load config, configure logging, open SQLite, build vault service + scanner (run one scan to index any out-of-band files), runner, resume store, `RunService`. Vault uses `NumpyVectorStore` persisted to `{data-dir}/.store/` with `nomic-embed-text-v1.5` embeddings.
+1. `build_engine(cwd)` — load config, configure logging, open SQLite, build vault service + scanner (run one scan to index any out-of-band files), install bundled skills into `{cwd}/.claude/skills/`, build runner, resume store, `RunService`. Vault uses `NumpyVectorStore` persisted to `{data-dir}/.store/` with `nomic-embed-text-v1.5` embeddings.
 2. `_build_intakes()` — instantiate `VaultWatcher`, HTTP, and Discord intakes per config and flags.
 3. Start each intake sequentially. Wait on `stop_event` (SIGINT/SIGTERM).
 4. On shutdown: stop intakes in reverse order, close SQLite.

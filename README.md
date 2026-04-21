@@ -92,6 +92,13 @@ MCP tools exposed to the provider:
 - `vault_search(query, limit?, file?)` — semantic search over chunks. Returns file path, heading, preview, score.
 - `vault_recall(path)` — full markdown body of a vault file.
 
+Skills bundled with the engine (installed into `{cwd}/.claude/skills/` at startup, discovered via the Claude SDK's project setting source):
+
+- `remember` — wraps `vault_write` with routing, dedup, and update-over-write policy. Reads `Index.md` from the vault to pick the right subdirectory, searches for existing files before writing, and prefers editing over creating duplicates.
+- `recall` — wraps `vault_search` + `vault_recall` with "search before you answer" policy. Triangulates across paraphrased queries, opens the file for full context on strong hits, refuses to assert absence without searching.
+
+Write your own skills at `{cwd}/.claude/skills/{name}/SKILL.md`. Bundled skills are refreshed on every engine startup if their content changes.
+
 Index storage (embeddings + metadata) lives at `{data_dir}/.store/`. Checksums at `{vault.directory}/.vault_checksums.json`. Commit the markdown; gitignore the store.
 
 ## Adding a provider
