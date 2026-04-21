@@ -39,16 +39,26 @@ class Engine:
 
 
 def _build_vault(config: EngineConfig) -> tuple[VaultService, VaultScanner]:
-    from agent_engine.infrastructure.vault.sentence_transformers_index import (
-        SentenceTransformersIndex,
+    from agent_engine.infrastructure.vault.embedding import (
+        EMBEDDING_DIM,
+        embed_documents,
+        embed_queries,
+    )
+    from agent_engine.infrastructure.vault.numpy_vector_store import NumpyVectorStore
+    from agent_engine.infrastructure.vault.persistent_vector_index import (
+        PersistentVectorIndex,
     )
 
     repository = FileVaultRepository(config.vault.directory)
-    index_path = config.vault.directory / "index.pkl"
-    index = SentenceTransformersIndex(
-        model_name=config.vault.embedding_model,
-        storage_path=index_path,
+    store_dir = config.data_dir / ".store"
+    store = NumpyVectorStore(
+        store_dir=store_dir,
+        name="vault",
+        embed_fn=embed_documents,
+        embedding_dim=EMBEDDING_DIM,
+        query_embed_fn=embed_queries,
     )
+    index = PersistentVectorIndex(store=store)
     scanner = FileVaultScanner(
         directory=config.vault.directory,
         index=index,
