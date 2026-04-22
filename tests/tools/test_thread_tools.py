@@ -13,7 +13,6 @@ from agent_engine.tools.thread_tools import (
 
 
 class InMemoryThreadRepository(ThreadRepository):
-
     def __init__(self) -> None:
         self.threads: dict[str, Thread] = {}
 
@@ -145,4 +144,5 @@ def test_tool_names_match_mcp_prefix():
     assert THREAD_TOOL_NAMES == (
         "mcp__thread__thread_recall",
         "mcp__thread__thread_list",
+        "mcp__thread__thread_search",
     )

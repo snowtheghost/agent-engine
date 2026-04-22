@@ -6,9 +6,12 @@ from pathlib import Path
 
 import structlog
 
+from agent_engine.application.indexing.indexer import AsyncIndexingWorker
 from agent_engine.application.integration.intake import Intake
 from agent_engine.application.run.runner.runner import Runner
 from agent_engine.application.run.service.run_service import RunService
+from agent_engine.application.thread.index.thread_index import ThreadIndex
+from agent_engine.application.thread.scanner.thread_scanner import ThreadScanner
 from agent_engine.application.thread.service.thread_service import ThreadService
 from agent_engine.application.vault.scanner.vault_scanner import VaultScanner
 from agent_engine.application.vault.service.vault_service import VaultService
@@ -21,6 +24,10 @@ from agent_engine.infrastructure.persistence.sqlite_thread_cursor_store import (
 )
 from agent_engine.infrastructure.system.config.config import EngineConfig, load_config
 from agent_engine.infrastructure.system.logging.logging import configure_logging
+from agent_engine.infrastructure.thread.indexing_thread_repository import (
+    IndexingThreadRepository,
+)
+from agent_engine.infrastructure.thread.jsonl_thread_scanner import JsonlThreadScanner
 from agent_engine.infrastructure.thread.persistence.jsonl_thread_repository import (
     JsonlThreadRepository,
 )
@@ -44,10 +51,16 @@ class Engine:
     vault_service: VaultService
     vault_scanner: VaultScanner
     thread_service: ThreadService
+    thread_index: ThreadIndex
+    thread_scanner: ThreadScanner
+    indexing_worker: AsyncIndexingWorker
     intakes: list[Intake]
 
 
-def _build_vault(config: EngineConfig) -> tuple[VaultService, VaultScanner]:
+def _build_vault(
+    config: EngineConfig,
+    worker: AsyncIndexingWorker,
+) -> tuple[VaultService, VaultScanner]:
     from agent_engine.infrastructure.vault.embedding import (
         EMBEDDING_DIM,
         embed_documents,
@@ -73,18 +86,62 @@ def _build_vault(config: EngineConfig) -> tuple[VaultService, VaultScanner]:
         directory=config.vault.directory,
         index=index,
         scanner=scanner,
+        scheduler=worker,
     )
     return service, scanner
+
+
+def _build_thread(
+    config: EngineConfig,
+    connection: sqlite3.Connection,
+    worker: AsyncIndexingWorker,
+) -> tuple[ThreadService, ThreadIndex, ThreadScanner]:
+    from agent_engine.infrastructure.thread.numpy_thread_index import NumpyThreadIndex
+    from agent_engine.infrastructure.vault.embedding import (
+        EMBEDDING_DIM,
+        embed_documents,
+        embed_queries,
+    )
+    from agent_engine.infrastructure.vault.numpy_vector_store import NumpyVectorStore
+
+    store = NumpyVectorStore(
+        store_dir=config.data_dir / ".store",
+        name="thread",
+        embed_fn=embed_documents,
+        embedding_dim=EMBEDDING_DIM,
+        query_embed_fn=embed_queries,
+    )
+    thread_index = NumpyThreadIndex(store=store)
+
+    cursor_store = SqliteThreadCursorStore(connection)
+    base_repository = JsonlThreadRepository(
+        data_dir=config.data_dir,
+        cursor_store=cursor_store,
+    )
+    repository = IndexingThreadRepository(
+        inner=base_repository,
+        index=thread_index,
+        scheduler=worker,
+    )
+    thread_service = ThreadService(repository=repository)
+
+    thread_scanner = JsonlThreadScanner(
+        threads_dir=config.data_dir / "threads",
+        repository=base_repository,
+        index=thread_index,
+    )
+    return thread_service, thread_index, thread_scanner
 
 
 def _build_runners(
     config: EngineConfig,
     vault_service: VaultService,
     thread_service: ThreadService,
+    thread_index: ThreadIndex,
 ) -> dict[str, Runner]:
     mcp_servers = {
         "vault": build_vault_mcp_server(vault_service),
-        "thread": build_thread_mcp_server(thread_service),
+        "thread": build_thread_mcp_server(thread_service, index=thread_index),
     }
     runners: dict[str, Runner] = {}
     if config.providers.claude is not None:
@@ -106,19 +163,18 @@ def build_engine(cwd: Path, data_dir: Path | None = None) -> Engine:
     config.data_dir.mkdir(parents=True, exist_ok=True)
 
     connection = open_database(config.database_path)
-    vault_service, vault_scanner = _build_vault(config)
+    indexing_worker = AsyncIndexingWorker()
+    vault_service, vault_scanner = _build_vault(config, indexing_worker)
     vault_scanner.scan()
     installed = install_bundled_skills(config.cwd)
     logger.info("skills_installed", skills=installed, count=len(installed))
 
-    cursor_store = SqliteThreadCursorStore(connection)
-    thread_repository = JsonlThreadRepository(
-        data_dir=config.data_dir,
-        cursor_store=cursor_store,
+    thread_service, thread_index, thread_scanner = _build_thread(
+        config, connection, indexing_worker
     )
-    thread_service = ThreadService(repository=thread_repository)
+    thread_scanner.scan()
 
-    runners = _build_runners(config, vault_service, thread_service)
+    runners = _build_runners(config, vault_service, thread_service, thread_index)
     resume_store = SqliteResumeHandleStore(connection)
     run_service = RunService(
         runners=runners,
@@ -140,6 +196,9 @@ def build_engine(cwd: Path, data_dir: Path | None = None) -> Engine:
         vault_service=vault_service,
         vault_scanner=vault_scanner,
         thread_service=thread_service,
+        thread_index=thread_index,
+        thread_scanner=thread_scanner,
+        indexing_worker=indexing_worker,
         intakes=[],
     )
 
@@ -222,6 +281,8 @@ async def run_engine(
         except NotImplementedError:
             pass
 
+    await engine.indexing_worker.start()
+
     for intake in engine.intakes:
         await intake.start()
         logger.info("intake_started", intake=intake.name)
@@ -236,6 +297,10 @@ async def run_engine(
                 await intake.stop()
             except Exception:
                 logger.exception("intake_stop_failed", intake=intake.name)
+        try:
+            await engine.indexing_worker.stop()
+        except Exception:
+            logger.exception("indexing_worker_stop_failed")
         shutdown_engine(engine)
         logger.info("engine_stopped")
 

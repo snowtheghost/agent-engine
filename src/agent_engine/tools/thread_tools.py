@@ -3,11 +3,15 @@ from typing import Any
 from claude_agent_sdk import SdkMcpTool, create_sdk_mcp_server, tool
 from claude_agent_sdk.types import McpSdkServerConfig
 
+from agent_engine.application.thread.index.thread_index import ThreadIndex
 from agent_engine.application.thread.service.thread_service import ThreadService
 from agent_engine.core.thread.model.thread import AttachmentMetadata, Thread, ThreadEntry
 
 
-def build_thread_mcp_tools(thread_service: ThreadService) -> list[SdkMcpTool[Any]]:
+def build_thread_mcp_tools(
+    thread_service: ThreadService,
+    index: ThreadIndex | None = None,
+) -> list[SdkMcpTool[Any]]:
 
     @tool(
         name="thread_recall",
@@ -37,9 +41,7 @@ def build_thread_mcp_tools(thread_service: ThreadService) -> list[SdkMcpTool[Any
 
     @tool(
         name="thread_list",
-        description=(
-            "List durable thread resume_keys, most recently updated first."
-        ),
+        description=("List durable thread resume_keys, most recently updated first."),
         input_schema={
             "type": "object",
             "properties": {
@@ -61,14 +63,73 @@ def build_thread_mcp_tools(thread_service: ThreadService) -> list[SdkMcpTool[Any
             text = "\n".join(keys)
         return {"content": [{"type": "text", "text": text}]}
 
-    return [thread_recall, thread_list]
+    @tool(
+        name="thread_search",
+        description=(
+            "Search durable thread history by meaning. Returns top-k entries "
+            "across all conversations (or a single conversation if resume_key "
+            "is given) with author, timestamp, and similarity score."
+        ),
+        input_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Natural-language question or topic.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Max results to return.",
+                    "default": 5,
+                },
+                "resume_key": {
+                    "type": "string",
+                    "description": ("Restrict search to a single conversation (resume_key)."),
+                },
+            },
+            "required": ["query"],
+        },
+    )
+    async def thread_search(arguments: dict[str, Any]) -> dict[str, Any]:
+        if index is None:
+            return {
+                "content": [
+                    {
+                        "type": "text",
+                        "text": "Thread search is not available (no index configured).",
+                    }
+                ]
+            }
+        hits = index.search(
+            query=arguments["query"],
+            limit=int(arguments.get("limit", 5)),
+            resume_key_filter=arguments.get("resume_key"),
+        )
+        if not hits:
+            text = "No thread entries matched."
+        else:
+            lines = [f"Found {len(hits)} entries:"]
+            for chunk, score in hits:
+                preview = chunk.content.replace("\n", " ")[:240]
+                lines.append(
+                    f"\n[{score:.3f}] {chunk.resume_key}#{chunk.entry_index}"
+                    f"\n  author: {chunk.author} at {chunk.timestamp.isoformat()}"
+                    f"\n  preview: {preview}"
+                )
+            text = "\n".join(lines)
+        return {"content": [{"type": "text", "text": text}]}
+
+    return [thread_recall, thread_list, thread_search]
 
 
-def build_thread_mcp_server(thread_service: ThreadService) -> McpSdkServerConfig:
+def build_thread_mcp_server(
+    thread_service: ThreadService,
+    index: ThreadIndex | None = None,
+) -> McpSdkServerConfig:
     return create_sdk_mcp_server(
         name="thread",
         version="0.1.0",
-        tools=build_thread_mcp_tools(thread_service),
+        tools=build_thread_mcp_tools(thread_service, index=index),
     )
 
 
@@ -98,13 +159,11 @@ def _format_attachment(attachment: AttachmentMetadata) -> str:
         size_str = f"{size_kb / 1024:.1f} MB"
     else:
         size_str = f"{size_kb:.0f} KB"
-    return (
-        f"  {attachment.filename} ({attachment.content_type}, {size_str}): "
-        f"{attachment.path}"
-    )
+    return f"  {attachment.filename} ({attachment.content_type}, {size_str}): {attachment.path}"
 
 
 THREAD_TOOL_NAMES: tuple[str, ...] = (
     "mcp__thread__thread_recall",
     "mcp__thread__thread_list",
+    "mcp__thread__thread_search",
 )

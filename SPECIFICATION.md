@@ -37,13 +37,17 @@ src/agent_engine/
 │   ├── run/model/run_result.py      # RunResult
 │   ├── run/model/resume_handle.py   # ResumeHandle
 │   ├── thread/model/thread.py       # AttachmentMetadata, ThreadEntry, Thread
+│   ├── thread/model/chunk.py        # ThreadChunk, ThreadSearchHit
 │   └── vault/chunk.py               # VaultChunk, VaultSearchHit
 ├── application/
 │   ├── run/runner/runner.py         # Runner Protocol
 │   ├── run/service/run_service.py   # RunService
 │   ├── run/service/resume_handle_store.py
+│   ├── indexing/indexer.py                      # IndexingScheduler Protocol, InlineIndexingScheduler, AsyncIndexingWorker
+│   ├── thread/index/thread_index.py             # ThreadIndex ABC
 │   ├── thread/repository/thread_repository.py    # ThreadRepository ABC
 │   ├── thread/repository/thread_cursor_store.py  # ThreadCursorStore ABC
+│   ├── thread/scanner/thread_scanner.py         # ThreadScanner ABC, ThreadScanReport
 │   ├── thread/service/thread_service.py          # ThreadService
 │   ├── vault/index/vault_index.py   # VaultIndex ABC
 │   ├── vault/scanner/vault_scanner.py        # VaultScanner ABC, ScanReport
@@ -70,6 +74,11 @@ src/agent_engine/
 │   │   └── session_rollback.py
 │   └── codex/runner.py              # stub
 ├── infrastructure/
+│   ├── thread/chunker.py                      # ThreadEntry → ThreadChunk (one chunk per entry, attachments inlined)
+│   ├── thread/in_memory_thread_index.py       # token-cosine ThreadIndex for tests
+│   ├── thread/indexing_thread_repository.py   # ThreadRepository decorator that schedules indexing on append/delete
+│   ├── thread/jsonl_thread_scanner.py         # startup scan that reindexes thread JSONL files when checksums change
+│   ├── thread/numpy_thread_index.py           # production ThreadIndex adapter over NumpyVectorStore
 │   ├── thread/persistence/jsonl_thread_repository.py   # append-only JSONL thread store
 │   ├── vault/chunker.py                    # markdown → chunks (by ##/### headings)
 │   ├── vault/file_vault_scanner.py         # directory scanner + chunk index sync
@@ -189,11 +198,11 @@ The vault is a directory of free-form markdown files. Files are the source of tr
 
 ### Service
 
-- `VaultService.write(title, content, tags=(), subdirectory=None)` → writes a slugified markdown file with frontmatter and an H1, chunks and upserts immediately, returns the written `Path`.
+- `VaultService.write(title, content, tags=(), subdirectory=None)` → writes a slugified markdown file with frontmatter and an H1, schedules chunk + upsert via the injected `IndexingScheduler`, returns the written `Path`. File is persisted before the call returns; index updates happen on the scheduler (async worker in production, inline in tests / by default).
 - `VaultService.search(query, limit=5, file_filter=None)` → returns `list[VaultSearchHit]`.
 - `VaultService.recall(file_path)` → returns the full markdown body or `None`. Accepts either a vault-relative path or an absolute path under the vault root.
-- `VaultService.ingest(path)` → chunk + upsert a specific file by absolute path. Returns chunk count. Used by the watcher.
-- `VaultService.evict(path)` → remove chunks for a specific file. Returns removed count. Used by the watcher.
+- `VaultService.ingest(path)` → schedules chunk + upsert for a specific file by absolute path. Returns chunk count computed synchronously (index update may lag when using an async scheduler). Used by the watcher.
+- `VaultService.evict(path)` → schedules chunk removal for a specific file. Returns `1` when the path resolves into the vault (eviction was scheduled) or `0` when the path is outside the vault. Used by the watcher.
 - `VaultService.files()` → `set[str]` of relative paths currently indexed.
 - `VaultService.count()` → chunk count.
 - `VaultService.rescan(force=False)` → run the scanner.
@@ -202,7 +211,7 @@ The vault is a directory of free-form markdown files. Files are the source of tr
 
 - `tools/vault_tools.py` wraps the service as three MCP tools (`vault_write`, `vault_search`, `vault_recall`) and returns an `McpSdkServerConfig` via `build_vault_mcp_server(vault_service)`.
 - `vault_search` output includes the file path, heading, and score for each chunk.
-- `tools/thread_tools.py` wraps `ThreadService` as two MCP tools (`thread_recall`, `thread_list`) and returns an `McpSdkServerConfig` via `build_thread_mcp_server(thread_service)`. Registered alongside the vault server by `main._build_runner`.
+- `tools/thread_tools.py` wraps `ThreadService` (and an optional `ThreadIndex`) as three MCP tools (`thread_recall`, `thread_list`, `thread_search`) and returns an `McpSdkServerConfig` via `build_thread_mcp_server(thread_service, index=thread_index)`. Registered alongside the vault server by `main._build_runners`. `thread_search` returns `(score, resume_key#entry_index, author, timestamp, preview)` per hit; when no index is configured it returns a "not available" message.
 
 ### Skills
 
@@ -226,13 +235,15 @@ Packaging: `pyproject.toml` includes `tool.setuptools.package-data = { "agent_en
 
 ## Threads
 
-Durable per-conversation history, keyed on `resume_key`. Persistence of entries matches the vault pattern (files on disk, one per thread); the read cursor lives in SQLite for fast upsert.
+Durable per-conversation history, keyed on `resume_key`. Persistence of entries matches the vault pattern (files on disk, one per thread); the read cursor lives in SQLite for fast upsert. Entries are indexed for semantic search mirroring the vault pipeline.
 
 ### Model
 
 - `AttachmentMetadata(path, filename, content_type, size, description)` — frozen. `description` carries optional vision text.
 - `ThreadEntry(author, content, attachments, timestamp)`.
 - `Thread(resume_key, entries, read_cursor)` with `append(entry)` and `unread_from(cursor) -> list[ThreadEntry]`.
+- `ThreadChunk(chunk_id, resume_key, entry_index, author, timestamp, content)`. One chunk per `ThreadEntry`. `chunk_id` is a deterministic `md5(resume_key:entry_index:content_prefix)`. `content` combines the entry body with any attachment descriptions so vision captions are findable by search.
+- `ThreadSearchHit(chunk, score)`.
 - `AGENT_AUTHOR = "agent"` is the reserved author string for replies written by `ThreadService.log_reply`. Only entries whose author is not `AGENT_AUTHOR` count as pending prompts.
 
 ### Persistence layout
@@ -249,12 +260,46 @@ Durable per-conversation history, keyed on `resume_key`. Persistence of entries 
 - `ThreadService.get_pending_prompts(resume_key) -> tuple[str, int] | None` — returns `(combined_prompt, new_cursor)` for all unread non-agent entries. New cursor is `len(entries)` at call time.
 - `ThreadService.get_thread(resume_key) -> Thread | None`.
 - `ThreadService.list_threads(limit=50, offset=0) -> list[str]` — resume_keys most-recently-updated first.
-- Single-entry format mirrors the airy-engine `_entry_to_prompt` output: `"[From: <author>]\n\n<content>"` with an optional `[Attachments:]` block.
+- Single-entry format: `"[From: <author>]\n\n<content>"` with an optional `[Attachments:]` block.
 - Multi-entry format is prefixed with `"[Queued messages while you were working:]\n"` followed by blank-line-separated entry blocks.
+
+### ThreadIndex
+
+- `ThreadIndex` ABC in `application/thread/index/thread_index.py`. Operations: `upsert(chunks)`, `delete_by_resume_key(resume_key)`, `search(query, limit, resume_key_filter=None)`, `resume_keys()`, `count()`, `close()`.
+- Two implementations:
+  - `NumpyThreadIndex` (production) — adapts `NumpyVectorStore` to the thread chunk interface. Reuses the shared `NumpyVectorStore` impl with `name="thread"`, persisted under `{data_dir}/.store/` alongside the vault store.
+  - `InMemoryThreadIndex` (tests) — token-cosine over lowercase word tokens. Stateless.
+
+### IndexingThreadRepository
+
+- Wraps a `ThreadRepository` and a `ThreadIndex` with an `IndexingScheduler`. On `append`: forwards to the inner repository, then chunks the newly appended entry and schedules an index upsert. On `delete`: forwards then schedules a `delete_by_resume_key`. `load`, `list_keys`, `update_cursor` pass through unchanged.
+- Registered as the repository in `ThreadService` in production so every append ends up in the index.
+
+### ThreadScanner
+
+- `ThreadScanner` ABC in `application/thread/scanner/thread_scanner.py`. `scan(force=False) -> ThreadScanReport(indexed_threads, skipped_unchanged, removed_threads, total_threads, total_chunks)`.
+- `JsonlThreadScanner` walks `{data_dir}/threads/*.jsonl`. Per thread: MD5 checksum vs previous; on mismatch, `delete_by_resume_key` the index then chunk all entries and upsert. Threads whose file is missing have their chunks removed. Checksums persisted at `{data_dir}/threads/.thread_checksums.json`.
+- Invoked once at engine startup from `build_engine`, after the vault scan. Handles threads that changed while the engine was down (e.g. writes from a stopped-engine integration).
 
 ### Integrations
 
 See below under `## Integrations` and `## Interrupt flow`.
+
+## Indexing
+
+Chunk+embed work for both vault writes and thread appends flows through a shared `IndexingScheduler` so agent-facing code paths don't block on embedding.
+
+### Scheduler
+
+- `IndexingScheduler` Protocol in `application/indexing/indexer.py`. Single method: `schedule(job: Callable[[], None], *, name: str) -> None`. Fire-and-forget; no return value.
+- `InlineIndexingScheduler` runs the job immediately in the caller's thread. Used by `VaultService` when no explicit scheduler is injected, which keeps unit tests synchronous.
+- `AsyncIndexingWorker` runs a single background asyncio task that pulls jobs off an `asyncio.Queue` and executes each in a thread-pool executor (`asyncio.to_thread`). Vault writes and thread appends share one worker and one queue. `start()` spawns the task; `stop()` drains the queue, cancels the task, and is idempotent. `drain()` awaits queue completion (used in tests). Jobs scheduled after `stop()` are dropped with a warning.
+
+### Lifecycle integration
+
+- `build_engine` constructs an `AsyncIndexingWorker`, passes it as the scheduler to `VaultService`, and wraps the base `JsonlThreadRepository` with `IndexingThreadRepository(inner, thread_index, worker)` before handing to `ThreadService`.
+- The vault and thread scanners run once during `build_engine` using the indexes directly (not through the scheduler), so engine startup reaches a consistent state before any intake starts accepting traffic.
+- `run_engine` awaits `worker.start()` after intakes are built and before they start. On shutdown, intakes stop first, then `worker.stop()` drains pending jobs, then the DB connection closes.
 
 ## Config
 
@@ -330,10 +375,10 @@ Sessions can be cancelled mid-run via `Runner.interrupt(run_id)`. The flow:
 
 `main.run_engine(cwd, data_dir, disable_discord, disable_http, disable_watcher)`:
 
-1. `build_engine(cwd)` — load config, configure logging, open SQLite, build vault service + scanner (run one scan to index any out-of-band files), install bundled skills into `{cwd}/.claude/skills/`, build thread service (JSONL repository + SQLite cursor store), runner (receives both vault and thread MCP servers), resume store, `RunService`. Vault uses `NumpyVectorStore` persisted to `{data-dir}/.store/` with `nomic-embed-text-v1.5` embeddings.
+1. `build_engine(cwd)` — load config, configure logging, open SQLite, construct an `AsyncIndexingWorker`, build vault service + scanner (scheduler-aware, run one scan to index any out-of-band files), install bundled skills into `{cwd}/.claude/skills/`, build thread service (JSONL repository wrapped in `IndexingThreadRepository` + SQLite cursor store), thread scanner (run one scan), runner (receives vault and thread MCP servers, the thread server also gets the `ThreadIndex` so `thread_search` works), resume store, `RunService`. Vault uses `NumpyVectorStore` persisted to `{data-dir}/.store/` with `nomic-embed-text-v1.5` embeddings; thread chunks use the same store dir under `name="thread"`.
 2. `_build_intakes()` — instantiate `VaultWatcher`, HTTP, and Discord intakes per config and flags.
-3. Start each intake sequentially. Wait on `stop_event` (SIGINT/SIGTERM).
-4. On shutdown: stop intakes in reverse order, close SQLite.
+3. Start the indexing worker, then start each intake sequentially. Wait on `stop_event` (SIGINT/SIGTERM).
+4. On shutdown: stop intakes in reverse order, stop the indexing worker (drains queue), close SQLite.
 
 ## What this engine does not do
 

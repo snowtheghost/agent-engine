@@ -6,6 +6,7 @@ from pathlib import Path
 
 import structlog
 
+from agent_engine.application.indexing.indexer import IndexingScheduler, InlineIndexingScheduler
 from agent_engine.application.vault.index.vault_index import VaultIndex
 from agent_engine.application.vault.scanner.vault_scanner import VaultScanner
 from agent_engine.core.vault.chunk import VaultSearchHit
@@ -19,16 +20,17 @@ _VAULT_FILE_SUFFIX = ".md"
 
 
 class VaultService:
-
     def __init__(
         self,
         directory: Path,
         index: VaultIndex,
         scanner: VaultScanner,
+        scheduler: IndexingScheduler | None = None,
     ) -> None:
         self._directory = directory
         self._index = index
         self._scanner = scanner
+        self._scheduler = scheduler or InlineIndexingScheduler()
 
     def write(
         self,
@@ -50,8 +52,11 @@ class VaultService:
         rel = str(path.relative_to(self._directory))
         chunks = chunk_markdown(text, rel)
         if chunks:
-            self._index.delete_by_file(rel)
-            self._index.upsert(chunks)
+            index = self._index
+            self._scheduler.schedule(
+                lambda: _reindex_file(index, rel, chunks),
+                name=f"vault_write:{rel}",
+            )
 
         logger.info(
             "vault_write",
@@ -100,9 +105,11 @@ class VaultService:
         except (OSError, UnicodeDecodeError):
             return 0
         chunks = chunk_markdown(text, rel)
-        self._index.delete_by_file(rel)
-        if chunks:
-            self._index.upsert(chunks)
+        index = self._index
+        self._scheduler.schedule(
+            lambda: _reindex_file(index, rel, chunks),
+            name=f"vault_ingest:{rel}",
+        )
         logger.info("vault_ingest", path=rel, chunks=len(chunks))
         return len(chunks)
 
@@ -110,10 +117,13 @@ class VaultService:
         rel = self._relative_key(path)
         if rel is None:
             return 0
-        removed = self._index.delete_by_file(rel)
-        if removed:
-            logger.info("vault_evict", path=rel, removed=removed)
-        return removed
+        index = self._index
+        self._scheduler.schedule(
+            lambda: index.delete_by_file(rel),
+            name=f"vault_evict:{rel}",
+        )
+        logger.info("vault_evict_scheduled", path=rel)
+        return 1
 
     def count(self) -> int:
         return self._index.count()
@@ -174,6 +184,11 @@ class VaultService:
 def _slugify(title: str) -> str:
     cleaned = _SLUG_PATTERN.sub("-", title).strip("-")
     return cleaned[:80]
+
+
+def _reindex_file(index: VaultIndex, rel_path: str, chunks: list) -> None:
+    index.delete_by_file(rel_path)
+    index.upsert(chunks)
 
 
 def _atomic_write(path: Path, text: str) -> None:
