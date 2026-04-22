@@ -1,26 +1,10 @@
 import asyncio
-from collections.abc import Awaitable, Callable
-from typing import Protocol, runtime_checkable
 
 import structlog
 
+from agent_engine.application.indexing.scheduler import IndexingJob
+
 logger = structlog.get_logger(__name__)
-
-
-IndexingJob = Callable[[], None]
-
-
-@runtime_checkable
-class IndexingScheduler(Protocol):
-    def schedule(self, job: IndexingJob, *, name: str) -> None: ...
-
-
-class InlineIndexingScheduler:
-    def schedule(self, job: IndexingJob, *, name: str) -> None:
-        try:
-            job()
-        except Exception:
-            logger.exception("inline_indexing_job_failed", name=name)
 
 
 class AsyncIndexingWorker:
@@ -72,8 +56,6 @@ class AsyncIndexingWorker:
 
 def _run_job(job: IndexingJob, name: str) -> None:
     try:
-        result = job()
-        if isinstance(result, Awaitable):
-            logger.warning("indexing_job_returned_awaitable", name=name)
+        job()
     except Exception:
         logger.exception("indexing_job_failed", name=name)

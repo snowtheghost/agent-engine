@@ -6,10 +6,11 @@ from pathlib import Path
 
 import structlog
 
-from agent_engine.application.indexing.indexer import IndexingScheduler, InlineIndexingScheduler
+from agent_engine.application.indexing.scheduler import IndexingScheduler
 from agent_engine.application.vault.index.vault_index import VaultIndex
 from agent_engine.application.vault.scanner.vault_scanner import VaultScanner
 from agent_engine.core.vault.chunk import VaultSearchHit
+from agent_engine.infrastructure.indexing.inline_scheduler import InlineIndexingScheduler
 from agent_engine.infrastructure.vault.chunker import chunk_markdown
 
 logger = structlog.get_logger(__name__)

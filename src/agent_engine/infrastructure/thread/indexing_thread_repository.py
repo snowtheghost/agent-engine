@@ -1,6 +1,6 @@
 import structlog
 
-from agent_engine.application.indexing.indexer import IndexingScheduler
+from agent_engine.application.indexing.scheduler import IndexingScheduler
 from agent_engine.application.thread.index.thread_index import ThreadIndex
 from agent_engine.application.thread.repository.thread_repository import ThreadRepository
 from agent_engine.core.thread.model.thread import Thread, ThreadEntry

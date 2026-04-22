@@ -1,8 +1,8 @@
 from datetime import UTC, datetime
 
-from agent_engine.application.indexing.indexer import InlineIndexingScheduler
 from agent_engine.application.thread.repository.thread_repository import ThreadRepository
 from agent_engine.core.thread.model.thread import Thread, ThreadEntry
+from agent_engine.infrastructure.indexing.inline_scheduler import InlineIndexingScheduler
 from agent_engine.infrastructure.thread.in_memory_thread_index import InMemoryThreadIndex
 from agent_engine.infrastructure.thread.indexing_thread_repository import (
     IndexingThreadRepository,

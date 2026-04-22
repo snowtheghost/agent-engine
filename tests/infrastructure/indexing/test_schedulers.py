@@ -2,10 +2,8 @@ import asyncio
 
 import pytest
 
-from agent_engine.application.indexing.indexer import (
-    AsyncIndexingWorker,
-    InlineIndexingScheduler,
-)
+from agent_engine.infrastructure.indexing.async_worker import AsyncIndexingWorker
+from agent_engine.infrastructure.indexing.inline_scheduler import InlineIndexingScheduler
 
 
 def test_inline_scheduler_runs_immediately():

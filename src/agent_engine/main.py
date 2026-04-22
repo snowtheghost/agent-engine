@@ -6,7 +6,6 @@ from pathlib import Path
 
 import structlog
 
-from agent_engine.application.indexing.indexer import AsyncIndexingWorker
 from agent_engine.application.integration.intake import Intake
 from agent_engine.application.run.runner.runner import Runner
 from agent_engine.application.run.service.run_service import RunService
@@ -15,6 +14,7 @@ from agent_engine.application.thread.scanner.thread_scanner import ThreadScanner
 from agent_engine.application.thread.service.thread_service import ThreadService
 from agent_engine.application.vault.scanner.vault_scanner import VaultScanner
 from agent_engine.application.vault.service.vault_service import VaultService
+from agent_engine.infrastructure.indexing.async_worker import AsyncIndexingWorker
 from agent_engine.infrastructure.persistence.database import open_database
 from agent_engine.infrastructure.persistence.sqlite_resume_handle_store import (
     SqliteResumeHandleStore,

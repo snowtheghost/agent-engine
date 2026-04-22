@@ -43,7 +43,7 @@ src/agent_engine/
 │   ├── run/runner/runner.py         # Runner Protocol
 │   ├── run/service/run_service.py   # RunService
 │   ├── run/service/resume_handle_store.py
-│   ├── indexing/indexer.py                      # IndexingScheduler Protocol, InlineIndexingScheduler, AsyncIndexingWorker
+│   ├── indexing/scheduler.py                    # IndexingScheduler Protocol
 │   ├── thread/index/thread_index.py             # ThreadIndex ABC
 │   ├── thread/repository/thread_repository.py    # ThreadRepository ABC
 │   ├── thread/repository/thread_cursor_store.py  # ThreadCursorStore ABC
@@ -74,6 +74,8 @@ src/agent_engine/
 │   │   └── session_rollback.py
 │   └── codex/runner.py              # stub
 ├── infrastructure/
+│   ├── indexing/async_worker.py               # AsyncIndexingWorker (shared indexing loop)
+│   ├── indexing/inline_scheduler.py           # InlineIndexingScheduler (synchronous fallback)
 │   ├── thread/chunker.py                      # ThreadEntry → ThreadChunk (one chunk per entry, attachments inlined)
 │   ├── thread/in_memory_thread_index.py       # token-cosine ThreadIndex for tests
 │   ├── thread/indexing_thread_repository.py   # ThreadRepository decorator that schedules indexing on append/delete
@@ -291,9 +293,9 @@ Chunk+embed work for both vault writes and thread appends flows through a shared
 
 ### Scheduler
 
-- `IndexingScheduler` Protocol in `application/indexing/indexer.py`. Single method: `schedule(job: Callable[[], None], *, name: str) -> None`. Fire-and-forget; no return value.
-- `InlineIndexingScheduler` runs the job immediately in the caller's thread. Used by `VaultService` when no explicit scheduler is injected, which keeps unit tests synchronous.
-- `AsyncIndexingWorker` runs a single background asyncio task that pulls jobs off an `asyncio.Queue` and executes each in a thread-pool executor (`asyncio.to_thread`). Vault writes and thread appends share one worker and one queue. `start()` spawns the task; `stop()` drains the queue, cancels the task, and is idempotent. `drain()` awaits queue completion (used in tests). Jobs scheduled after `stop()` are dropped with a warning.
+- `IndexingScheduler` Protocol in `application/indexing/scheduler.py`. Single method: `schedule(job: Callable[[], None], *, name: str) -> None`. Fire-and-forget; no return value.
+- `InlineIndexingScheduler` (`infrastructure/indexing/inline_scheduler.py`) runs the job immediately in the caller's thread. Used by `VaultService` when no explicit scheduler is injected, which keeps unit tests synchronous.
+- `AsyncIndexingWorker` (`infrastructure/indexing/async_worker.py`) runs a single background asyncio task that pulls jobs off an `asyncio.Queue` and executes each in a thread-pool executor (`asyncio.to_thread`). Vault writes and thread appends share one worker and one queue. `start()` spawns the task; `stop()` drains the queue, cancels the task, and is idempotent. `drain()` awaits queue completion (used in tests). Jobs scheduled after `stop()` are dropped with a warning.
 
 ### Lifecycle integration
 
