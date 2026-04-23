@@ -20,8 +20,9 @@ class JsonlThreadRepository(ThreadRepository):
     def __init__(self, data_dir: Path, cursor_store: ThreadCursorStore) -> None:
         self._directory = data_dir / "threads"
         self._cursor_store = cursor_store
+        self._entry_counts: dict[str, int] = {}
 
-    def append(self, resume_key: str, entry: ThreadEntry) -> None:
+    def append(self, resume_key: str, entry: ThreadEntry) -> int:
         path = self._path(resume_key)
         path.parent.mkdir(parents=True, exist_ok=True)
         record: dict[str, object] = {
@@ -40,8 +41,11 @@ class JsonlThreadRepository(ThreadRepository):
                 }
                 for attachment in entry.attachments
             ]
+        entry_index = self._next_entry_index(resume_key, path)
         with open(path, "a", encoding="utf-8") as file:
             file.write(json.dumps(record) + "\n")
+        self._entry_counts[resume_key] = entry_index + 1
+        return entry_index
 
     def load(self, resume_key: str) -> Thread | None:
         path = self._path(resume_key)
@@ -53,12 +57,22 @@ class JsonlThreadRepository(ThreadRepository):
 
     def delete(self, resume_key: str) -> bool:
         path = self._path(resume_key)
+        self._entry_counts.pop(resume_key, None)
         if not path.exists():
             self._cursor_store.clear(resume_key)
             return False
         path.unlink()
         self._cursor_store.clear(resume_key)
         return True
+
+    def _next_entry_index(self, resume_key: str, path: Path) -> int:
+        cached = self._entry_counts.get(resume_key)
+        if cached is not None:
+            return cached
+        if not path.exists():
+            return 0
+        with open(path, "rb") as file:
+            return sum(1 for line in file if line.strip())
 
     def list_keys(self) -> list[str]:
         if not self._directory.exists():

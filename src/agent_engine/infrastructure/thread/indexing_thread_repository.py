@@ -20,22 +20,17 @@ class IndexingThreadRepository(ThreadRepository):
         self._index = index
         self._scheduler = scheduler
 
-    def append(self, resume_key: str, entry: ThreadEntry) -> None:
-        self._inner.append(resume_key, entry)
-        thread = self._inner.load(resume_key)
-        if thread is None:
-            return
-        entry_index = len(thread.entries) - 1
-        if entry_index < 0:
-            return
+    def append(self, resume_key: str, entry: ThreadEntry) -> int:
+        entry_index = self._inner.append(resume_key, entry)
         chunk = chunk_entry(resume_key, entry_index, entry)
         if chunk is None:
-            return
+            return entry_index
         index = self._index
         self._scheduler.schedule(
             lambda: index.upsert([chunk]),
             name=f"thread_append:{resume_key}:{entry_index}",
         )
+        return entry_index
 
     def load(self, resume_key: str) -> Thread | None:
         return self._inner.load(resume_key)

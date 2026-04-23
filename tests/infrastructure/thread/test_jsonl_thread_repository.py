@@ -42,6 +42,37 @@ def test_load_returns_none_when_file_missing(repository):
     assert repository.load("never") is None
 
 
+def test_append_returns_entry_index(repository):
+    first_index = repository.append("k1", _entry("first"))
+    second_index = repository.append("k1", _entry("second"))
+    third_index = repository.append("k1", _entry("third"))
+
+    assert first_index == 0
+    assert second_index == 1
+    assert third_index == 2
+
+
+def test_append_index_survives_reopen(tmp_path):
+    cursor_store = InMemoryCursorStore()
+    first = JsonlThreadRepository(data_dir=tmp_path, cursor_store=cursor_store)
+    first.append("k1", _entry("first"))
+    first.append("k1", _entry("second"))
+
+    second = JsonlThreadRepository(data_dir=tmp_path, cursor_store=cursor_store)
+    third_index = second.append("k1", _entry("third"))
+
+    assert third_index == 2
+
+
+def test_append_after_delete_resets_index(repository):
+    repository.append("k1", _entry("first"))
+    repository.append("k1", _entry("second"))
+    repository.delete("k1")
+    fresh_index = repository.append("k1", _entry("fresh"))
+
+    assert fresh_index == 0
+
+
 def test_append_and_load_round_trip(repository):
     entry = _entry("hello")
     repository.append("k1", entry)

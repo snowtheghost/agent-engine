@@ -253,6 +253,7 @@ Durable per-conversation history, keyed on `resume_key`. Persistence of entries 
 - One `{data_dir}/threads/{slug}.jsonl` per thread. Slug is `resume_key` with anything outside `[A-Za-z0-9_-]` replaced by `_`.
 - Append-only, one JSON record per line: `{author, content, timestamp, attachments?}`. On load, corrupt lines are skipped with a structlog warning.
 - Thread read cursor stored in SQLite table `thread_cursors(resume_key TEXT PRIMARY KEY, cursor INTEGER, updated_at TEXT)` via `SqliteThreadCursorStore`. Cursor advances only on `acknowledge`, never on read.
+- `ThreadRepository.append(resume_key, entry) -> int` returns the zero-based index of the just-appended entry. `JsonlThreadRepository` caches the per-key count in memory after the first probe (line count on open) so subsequent appends are O(1). `delete` clears the cached count.
 
 ### Service
 

@@ -37,8 +37,10 @@ class AsyncIndexingWorker:
         self._task.cancel()
         try:
             await self._task
-        except (asyncio.CancelledError, Exception):
+        except asyncio.CancelledError:
             pass
+        except Exception:
+            logger.exception("indexing_worker_task_exception_on_stop")
         self._task = None
         logger.info("indexing_worker_stopped")
 

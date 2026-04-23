@@ -37,6 +37,7 @@ class InMemoryThreadRepository(ThreadRepository):
     def append(self, resume_key, entry):
         thread = self.threads.setdefault(resume_key, Thread(resume_key=resume_key))
         thread.entries.append(entry)
+        return len(thread.entries) - 1
 
     def load(self, resume_key):
         return self.threads.get(resume_key)

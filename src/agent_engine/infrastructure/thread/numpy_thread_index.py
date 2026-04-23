@@ -1,8 +1,12 @@
-from datetime import datetime
+from datetime import UTC, datetime
+
+import structlog
 
 from agent_engine.application.thread.index.thread_index import ThreadIndex
 from agent_engine.core.thread.model.chunk import ThreadChunk
 from agent_engine.infrastructure.vault.numpy_vector_store import NumpyVectorStore
+
+logger = structlog.get_logger(__name__)
 
 
 class NumpyThreadIndex(ThreadIndex):
@@ -83,10 +87,14 @@ class NumpyThreadIndex(ThreadIndex):
         }
 
 
+_EPOCH_UTC = datetime.fromtimestamp(0, tz=UTC)
+
+
 def _parse_timestamp(raw: str) -> datetime:
     if not raw:
-        return datetime.fromtimestamp(0)
+        return _EPOCH_UTC
     try:
         return datetime.fromisoformat(raw)
     except ValueError:
-        return datetime.fromtimestamp(0)
+        logger.warning("thread_chunk_timestamp_parse_failed", raw=raw)
+        return _EPOCH_UTC

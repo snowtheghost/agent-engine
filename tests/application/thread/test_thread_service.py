@@ -13,9 +13,10 @@ class InMemoryThreadRepository(ThreadRepository):
     def __init__(self) -> None:
         self._threads: dict[str, Thread] = {}
 
-    def append(self, resume_key: str, entry: ThreadEntry) -> None:
+    def append(self, resume_key: str, entry: ThreadEntry) -> int:
         thread = self._threads.setdefault(resume_key, Thread(resume_key=resume_key))
         thread.entries.append(entry)
+        return len(thread.entries) - 1
 
     def load(self, resume_key: str) -> Thread | None:
         return self._threads.get(resume_key)

@@ -36,7 +36,7 @@ def _render_entry(entry: ThreadEntry) -> str:
         attachment_text = _render_attachment(attachment)
         if attachment_text:
             parts.append(attachment_text)
-    return "\n\n".join(part for part in parts if part).strip()
+    return "\n\n".join(part for part in parts if part)
 
 
 def _render_attachment(attachment: AttachmentMetadata) -> str:
