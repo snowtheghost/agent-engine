@@ -173,7 +173,11 @@ class DiscordIntake(Intake):
         if result is None:
             return
 
-        text = result.summary if result.summary else (result.error or "(no output)")
+        if not result.summary and not result.error:
+            logger.info("discord_reply_skipped_empty", thread_id=thread.id)
+            return
+
+        text = result.summary or result.error or ""
         if not result.success and result.error and not text.startswith("[error]"):
             text = f"[error] {text}"
         await self._send_chunked(thread, text)

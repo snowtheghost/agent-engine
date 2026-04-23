@@ -38,6 +38,7 @@ from agent_engine.integrations.skills.installer import install_bundled_skills
 from agent_engine.integrations.slack.bot import SlackIntake
 from agent_engine.integrations.watcher.vault_watcher import VaultWatcher
 from agent_engine.providers.claude.runner import ClaudeCodeRunner
+from agent_engine.tools.response_tools import build_response_mcp_server
 from agent_engine.tools.thread_tools import build_thread_mcp_server
 from agent_engine.tools.vault_tools import build_vault_mcp_server
 
@@ -143,6 +144,7 @@ def _build_runners(
     mcp_servers = {
         "vault": build_vault_mcp_server(vault_service),
         "thread": build_thread_mcp_server(thread_service, index=thread_index),
+        "response": build_response_mcp_server(),
     }
     runners: dict[str, Runner] = {}
     if config.providers.claude is not None:

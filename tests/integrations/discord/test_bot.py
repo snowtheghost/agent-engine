@@ -252,3 +252,31 @@ async def test_submit_and_reply_sends_nothing_when_none_returned() -> None:
     )
 
     thread.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_submit_and_reply_sends_nothing_when_summary_and_error_empty() -> None:
+    service = _run_service_returning()
+    service.submit_message = AsyncMock(
+        return_value=RunResult(
+            run_id="r1",
+            success=True,
+            summary="",
+            error=None,
+            duration_ms=1,
+            cost_usd=0.0,
+            turns=1,
+            resume_handle=None,
+        )
+    )
+    intake = _build_intake(run_service=service)
+    thread = _thread(parent_id=CONFIGURED_CHANNEL_ID, thread_id=321)
+
+    await intake._submit_and_reply(
+        thread,
+        author="alice",
+        content="ping",
+        resume_key="321",
+    )
+
+    thread.send.assert_not_called()

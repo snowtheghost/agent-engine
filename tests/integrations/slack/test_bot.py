@@ -192,6 +192,27 @@ async def test_no_reply_when_submit_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_no_reply_when_summary_and_error_empty():
+    silent_result = RunResult(
+        run_id="test-run",
+        success=True,
+        summary="",
+        error=None,
+        duration_ms=1,
+        cost_usd=0.0,
+        turns=1,
+        resume_handle=None,
+    )
+    service = _run_service(silent_result)
+    intake = _intake(service)
+    client = _client()
+
+    await intake._handle_message(_event(), client)
+
+    client.chat_postMessage.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_reaction_added_before_dispatch():
     service = _run_service(_ok_result())
     intake = _intake(service)

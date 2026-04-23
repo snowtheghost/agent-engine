@@ -95,7 +95,8 @@ src/agent_engine/
 │   ├── system/config/config.py             # YAML config loader
 │   └── system/logging/logging.py           # structlog + stdlib logging setup
 └── tools/
-    ├── thread_tools.py              # thread_recall / thread_list
+    ├── response_tools.py            # stay_silent
+    ├── thread_tools.py              # thread_recall / thread_list / thread_search
     └── vault_tools.py               # vault_write / vault_search / vault_recall
 ```
 
@@ -215,6 +216,7 @@ The vault is a directory of free-form markdown files. Files are the source of tr
 - `tools/vault_tools.py` wraps the service as three MCP tools (`vault_write`, `vault_search`, `vault_recall`) and returns an `McpSdkServerConfig` via `build_vault_mcp_server(vault_service)`.
 - `vault_search` output includes the file path, heading, and score for each chunk.
 - `tools/thread_tools.py` wraps `ThreadService` (and an optional `ThreadIndex`) as three MCP tools (`thread_recall`, `thread_list`, `thread_search`) and returns an `McpSdkServerConfig` via `build_thread_mcp_server(thread_service, index=thread_index)`. Registered alongside the vault server by `main._build_runners`. `thread_search` returns `(score, resume_key#entry_index, author, timestamp, preview)` per hit; when no index is configured it returns a "not available" message.
+- `tools/response_tools.py` exposes one MCP tool (`stay_silent(reason)`) via `build_response_mcp_server()`. The agent calls it to decide not to reply this turn; the tool logs the reason via structlog and returns an acknowledgement to the model. Combined with the integration behavior below (skip posting when `RunResult.summary` and `.error` are both empty), this gives the agent an explicit "no-reply" channel.
 
 ### Skills
 
@@ -337,6 +339,7 @@ Chunk+embed work for both vault writes and thread appends flows through a shared
 - If `channel_id` is set, listens only in that channel and its threads.
 - New message in the target channel → creates a thread and submits through `RunService.submit_message(resume_key=str(thread.id), author=message.author.display_name, content=prompt)`. Message in a thread → same call with the existing thread id as the `resume_key`.
 - If `submit_message` returns a `RunResult`, the summary is sent in ≤`character_limit` chunks. If it returns `None`, the caller sends nothing — the drainer from the active run already owns the reply.
+- When the returned `RunResult` has both `summary` and `error` empty, the intake skips posting entirely (silence path for `stay_silent` tool calls).
 - Messages sent during an active run are appended to the durable thread and replayed on the next drain as a single combined prompt starting with `"[Queued messages while you were working:]"`.
 
 ### Slack
@@ -349,6 +352,7 @@ Chunk+embed work for both vault writes and thread appends flows through a shared
 - Before dispatch: adds a `:eyes:` reaction to the triggering message as a lightweight "working" indicator. Failures to react are logged at debug and do not block.
 - Dispatches through `RunService.submit_message(resume_key=..., author=user_name, content=text)`.
 - If `submit_message` returns a `RunResult`, the summary (or error) is posted via `chat.postMessage` in-thread, chunked at `character_limit` (default 40000). If it returns `None`, the active drainer owns the reply — same contract as Discord.
+- When the returned `RunResult` has both `summary` and `error` empty, the intake skips posting (silence path).
 - Dispatch failures convert to an `[error] ...` reply in the thread.
 
 ### CLI

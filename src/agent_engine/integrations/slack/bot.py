@@ -114,7 +114,15 @@ class SlackIntake(Intake):
         if result is None:
             return
 
-        reply_text = result.summary if result.summary else (result.error or "(no output)")
+        if not result.summary and not result.error:
+            logger.info(
+                "slack_reply_skipped_empty",
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+            )
+            return
+
+        reply_text = result.summary or result.error or ""
         if not result.success and result.error and not reply_text.startswith("[error]"):
             reply_text = f"[error] {reply_text}"
         await self._send_chunked(client, channel_id, thread_ts, reply_text)
