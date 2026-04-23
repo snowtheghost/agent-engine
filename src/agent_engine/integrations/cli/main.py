@@ -38,6 +38,11 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Disable the HTTP intake for this run.",
     )
     serve.add_argument(
+        "--no-slack",
+        action="store_true",
+        help="Disable the Slack intake for this run.",
+    )
+    serve.add_argument(
         "--no-watcher",
         action="store_true",
         help="Disable the vault filesystem watcher for this run.",
@@ -77,6 +82,7 @@ async def _run_serve(
     data_dir: Path | None,
     no_discord: bool,
     no_http: bool,
+    no_slack: bool,
     no_watcher: bool,
 ) -> int:
     from agent_engine.main import run_engine
@@ -86,6 +92,7 @@ async def _run_serve(
         data_dir=data_dir,
         disable_discord=no_discord,
         disable_http=no_http,
+        disable_slack=no_slack,
         disable_watcher=no_watcher,
     )
     return 0
@@ -227,7 +234,14 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "serve":
         return asyncio.run(
-            _run_serve(cwd, data_dir, args.no_discord, args.no_http, args.no_watcher)
+            _run_serve(
+                cwd,
+                data_dir,
+                args.no_discord,
+                args.no_http,
+                args.no_slack,
+                args.no_watcher,
+            )
         )
     if args.command == "run":
         return asyncio.run(

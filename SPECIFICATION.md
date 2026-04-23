@@ -55,6 +55,7 @@ src/agent_engine/
 │   └── integration/intake.py        # Intake ABC
 ├── integrations/
 │   ├── discord/bot.py               # DiscordIntake
+│   ├── slack/bot.py                 # SlackIntake
 │   ├── http/server.py               # HttpIntake + FastAPI app
 │   ├── watcher/vault_watcher.py     # VaultWatcher (filesystem → ingest/evict)
 │   ├── skills/installer.py          # bundle skills into cwd/.claude/skills/
@@ -310,7 +311,7 @@ Chunk+embed work for both vault writes and thread appends flows through a shared
 - Default data-dir: `~/.agent-engine/`. Override with `--data-dir`.
 - Default vault directory: `{data-dir}`. Override with `vault.directory` in config.
 - Precedence: config file > defaults, with env overrides on top.
-- Env overrides: `AGENT_ENGINE_DISCORD_TOKEN`, `AGENT_ENGINE_DISCORD_CHANNEL_ID`, `AGENT_ENGINE_HTTP_PORT`, `AGENT_ENGINE_LOG_LEVEL`.
+- Env overrides: `AGENT_ENGINE_DISCORD_TOKEN`, `AGENT_ENGINE_DISCORD_CHANNEL_ID`, `AGENT_ENGINE_SLACK_BOT_TOKEN`, `AGENT_ENGINE_SLACK_APP_TOKEN`, `AGENT_ENGINE_SLACK_CHANNELS` (comma-separated), `AGENT_ENGINE_HTTP_PORT`, `AGENT_ENGINE_LOG_LEVEL`.
 - Config object is immutable (`@dataclass(frozen=True)`).
 - Database, vault directory, and vector store all live under `data-dir` by default. No files are written to `cwd`.
 
@@ -338,9 +339,21 @@ Chunk+embed work for both vault writes and thread appends flows through a shared
 - If `submit_message` returns a `RunResult`, the summary is sent in ≤`character_limit` chunks. If it returns `None`, the caller sends nothing — the drainer from the active run already owns the reply.
 - Messages sent during an active run are appended to the durable thread and replayed on the next drain as a single combined prompt starting with `"[Queued messages while you were working:]"`.
 
+### Slack
+
+- Own bot and app tokens (xoxb + xapp). Optional. Parallel to Discord; both can run side by side.
+- Socket Mode via `slack-bolt`'s `AsyncSocketModeHandler`. No public-facing HTTP endpoint required.
+- Listens to `message` events. Ignores bot messages (`bot_id` present), subtype events (e.g. `message_changed`), empty text, and any channel not in `monitored_channels` (exact ID match).
+- Resume key: `slack:{channel_id}:{thread_ts or ts}`. Top-level messages use their own `ts`; replies in a thread use the parent's `thread_ts`. The channel prefix prevents cross-channel collisions.
+- User name resolved via `users.info` and cached per-instance (display name → real name → user ID fallback).
+- Before dispatch: adds a `:eyes:` reaction to the triggering message as a lightweight "working" indicator. Failures to react are logged at debug and do not block.
+- Dispatches through `RunService.submit_message(resume_key=..., author=user_name, content=text)`.
+- If `submit_message` returns a `RunResult`, the summary (or error) is posted via `chat.postMessage` in-thread, chunked at `character_limit` (default 40000). If it returns `None`, the active drainer owns the reply — same contract as Discord.
+- Dispatch failures convert to an `[error] ...` reply in the thread.
+
 ### CLI
 
-- `agent-engine serve [--no-discord] [--no-http] [--no-watcher]` — start all enabled intakes.
+- `agent-engine serve [--no-discord] [--no-http] [--no-slack] [--no-watcher]` — start all enabled intakes.
 - `agent-engine run --prompt "..." [--resume-key KEY] [--model ...]`
 - `agent-engine vault search QUERY [--limit N] [--file PATH]` / `agent-engine vault list` / `agent-engine vault recall PATH`
 - `agent-engine thread list [--limit N]` / `agent-engine thread recall RESUME_KEY`

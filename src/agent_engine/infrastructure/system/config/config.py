@@ -18,6 +18,14 @@ class DiscordConfig:
 
 
 @dataclass(frozen=True)
+class SlackConfig:
+    bot_token: str | None
+    app_token: str | None
+    monitored_channels: tuple[str, ...]
+    character_limit: int
+
+
+@dataclass(frozen=True)
 class HttpConfig:
     host: str
     port: int
@@ -60,6 +68,7 @@ class EngineConfig:
     timezone: str
     vault: VaultConfig
     discord: DiscordConfig
+    slack: SlackConfig
     http: HttpConfig
     log_level: str
 
@@ -79,6 +88,12 @@ _DEFAULTS: dict[str, Any] = {
     "timezone": "UTC",
     "vault": {},
     "discord": {"token": None, "channel_id": None, "character_limit": 2000, "history_limit": 50},
+    "slack": {
+        "bot_token": None,
+        "app_token": None,
+        "monitored_channels": [],
+        "character_limit": 40000,
+    },
     "http": {"host": "127.0.0.1", "port": 8938, "enabled": True},
     "log_level": "INFO",
 }
@@ -118,6 +133,17 @@ def _env_overrides() -> dict[str, Any]:
     channel = os.environ.get("AGENT_ENGINE_DISCORD_CHANNEL_ID")
     if channel:
         overrides.setdefault("discord", {})["channel_id"] = int(channel)
+    slack_bot_token = os.environ.get("AGENT_ENGINE_SLACK_BOT_TOKEN")
+    if slack_bot_token:
+        overrides.setdefault("slack", {})["bot_token"] = slack_bot_token
+    slack_app_token = os.environ.get("AGENT_ENGINE_SLACK_APP_TOKEN")
+    if slack_app_token:
+        overrides.setdefault("slack", {})["app_token"] = slack_app_token
+    slack_channels = os.environ.get("AGENT_ENGINE_SLACK_CHANNELS")
+    if slack_channels:
+        overrides.setdefault("slack", {})["monitored_channels"] = [
+            channel_id.strip() for channel_id in slack_channels.split(",") if channel_id.strip()
+        ]
     port = os.environ.get("AGENT_ENGINE_HTTP_PORT")
     if port:
         overrides.setdefault("http", {})["port"] = int(port)
@@ -197,6 +223,9 @@ def load_config(cwd: Path | str, data_dir: Path | str | None = None) -> EngineCo
         history_limit=int(discord_raw["history_limit"]),
     )
 
+    slack_raw = merged["slack"]
+    slack = _build_slack_config(slack_raw)
+
     http_raw = merged["http"]
     http = HttpConfig(
         host=http_raw["host"],
@@ -212,6 +241,29 @@ def load_config(cwd: Path | str, data_dir: Path | str | None = None) -> EngineCo
         timezone=timezone,
         vault=vault,
         discord=discord,
+        slack=slack,
         http=http,
         log_level=str(merged["log_level"]),
+    )
+
+
+def _build_slack_config(raw: dict[str, Any]) -> SlackConfig:
+    channels_raw = raw.get("monitored_channels", [])
+    if isinstance(channels_raw, str):
+        channels = tuple(
+            channel_id.strip() for channel_id in channels_raw.split(",") if channel_id.strip()
+        )
+    elif isinstance(channels_raw, list):
+        channels = tuple(
+            str(channel_id).strip()
+            for channel_id in channels_raw
+            if str(channel_id).strip()
+        )
+    else:
+        raise ValueError("slack.monitored_channels must be a list or comma-separated string")
+    return SlackConfig(
+        bot_token=raw.get("bot_token"),
+        app_token=raw.get("app_token"),
+        monitored_channels=channels,
+        character_limit=int(raw.get("character_limit", 40000)),
     )

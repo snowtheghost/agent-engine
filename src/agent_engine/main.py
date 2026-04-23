@@ -35,6 +35,7 @@ from agent_engine.infrastructure.vault.file_vault_scanner import FileVaultScanne
 from agent_engine.integrations.discord.bot import DiscordIntake
 from agent_engine.integrations.http.server import HttpIntake, build_app
 from agent_engine.integrations.skills.installer import install_bundled_skills
+from agent_engine.integrations.slack.bot import SlackIntake
 from agent_engine.integrations.watcher.vault_watcher import VaultWatcher
 from agent_engine.providers.claude.runner import ClaudeCodeRunner
 from agent_engine.tools.thread_tools import build_thread_mcp_server
@@ -215,6 +216,7 @@ def _build_intakes(
     *,
     disable_discord: bool,
     disable_http: bool,
+    disable_slack: bool,
     disable_watcher: bool,
 ) -> list[Intake]:
     intakes: list[Intake] = []
@@ -249,6 +251,29 @@ def _build_intakes(
         else:
             logger.info("discord_intake_skipped_no_channel_id")
 
+    if not disable_slack:
+        slack_config = engine.config.slack
+        if (
+            slack_config.bot_token
+            and slack_config.app_token
+            and slack_config.monitored_channels
+        ):
+            intakes.append(
+                SlackIntake(
+                    bot_token=slack_config.bot_token,
+                    app_token=slack_config.app_token,
+                    monitored_channels=slack_config.monitored_channels,
+                    run_service=engine.run_service,
+                    character_limit=slack_config.character_limit,
+                )
+            )
+        elif not slack_config.bot_token:
+            logger.info("slack_intake_skipped_no_bot_token")
+        elif not slack_config.app_token:
+            logger.info("slack_intake_skipped_no_app_token")
+        else:
+            logger.info("slack_intake_skipped_no_channels")
+
     return intakes
 
 
@@ -258,6 +283,7 @@ async def run_engine(
     *,
     disable_discord: bool = False,
     disable_http: bool = False,
+    disable_slack: bool = False,
     disable_watcher: bool = False,
 ) -> None:
     engine = build_engine(cwd, data_dir=data_dir)
@@ -265,6 +291,7 @@ async def run_engine(
         engine,
         disable_discord=disable_discord,
         disable_http=disable_http,
+        disable_slack=disable_slack,
         disable_watcher=disable_watcher,
     )
 
