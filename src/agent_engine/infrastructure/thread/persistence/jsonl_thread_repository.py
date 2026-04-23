@@ -52,6 +52,7 @@ class JsonlThreadRepository(ThreadRepository):
         if not path.exists():
             return None
         entries = _read_entries(path)
+        self._entry_counts[resume_key] = len(entries)
         cursor = self._cursor_store.get(resume_key)
         return Thread(resume_key=resume_key, entries=entries, read_cursor=cursor)
 

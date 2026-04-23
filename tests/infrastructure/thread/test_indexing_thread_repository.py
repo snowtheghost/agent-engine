@@ -83,3 +83,19 @@ def test_delete_removes_chunks():
     repository.delete("k1")
 
     assert index.count() == 0
+
+
+def test_append_returns_entry_index_from_inner():
+    inner = InMemoryThreadRepository()
+    index = InMemoryThreadIndex()
+    repository = IndexingThreadRepository(
+        inner=inner, index=index, scheduler=InlineIndexingScheduler()
+    )
+
+    first = repository.append("k1", _entry("first entry long enough to be chunked now"))
+    second = repository.append("k1", _entry("second entry long enough to be chunked now"))
+    short = repository.append("k1", _entry("hi"))
+
+    assert first == 0
+    assert second == 1
+    assert short == 2
