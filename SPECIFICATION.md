@@ -349,7 +349,7 @@ Chunk+embed work for both vault writes and thread appends flows through a shared
 - Listens to `message` events. Ignores bot messages (`bot_id` present), subtype events (e.g. `message_changed`), empty text, and any channel not in `monitored_channels` (exact ID match).
 - Resume key: `slack:{channel_id}:{thread_ts or ts}`. Top-level messages use their own `ts`; replies in a thread use the parent's `thread_ts`. The channel prefix prevents cross-channel collisions.
 - User name resolved via `users.info` and cached per-instance (display name → real name → user ID fallback).
-- Before dispatch: adds a `:eyes:` reaction to the triggering message as a lightweight "working" indicator. Failures to react are logged at debug and do not block.
+- Before dispatch: adds a `:eyes:` reaction to the triggering message as a lightweight "working" indicator. Removes it on every exit path (success, error, silence, drainer-queued) via `finally`, so the reaction behaves like a typing indicator — on while the handler is processing, off once it returns. Failures to add or remove are logged at debug and do not block.
 - Dispatches through `RunService.submit_message(resume_key=..., author=user_name, content=text)`.
 - If `submit_message` returns a `RunResult`, the summary (or error) is posted via `chat.postMessage` in-thread, chunked at `character_limit` (default 40000). If it returns `None`, the active drainer owns the reply — same contract as Discord.
 - When the returned `RunResult` has both `summary` and `error` empty, the intake skips posting (silence path).

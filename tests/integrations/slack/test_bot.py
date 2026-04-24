@@ -49,6 +49,7 @@ def _client() -> MagicMock:
         }
     )
     client.reactions_add = AsyncMock()
+    client.reactions_remove = AsyncMock()
     client.chat_postMessage = AsyncMock()
     return client
 
@@ -213,7 +214,7 @@ async def test_no_reply_when_summary_and_error_empty():
 
 
 @pytest.mark.asyncio
-async def test_reaction_added_before_dispatch():
+async def test_reaction_added_before_dispatch_and_removed_after_reply():
     service = _run_service(_ok_result())
     intake = _intake(service)
     client = _client()
@@ -221,10 +222,72 @@ async def test_reaction_added_before_dispatch():
     await intake._handle_message(_event(), client)
 
     client.reactions_add.assert_awaited_once()
-    kwargs = client.reactions_add.await_args.kwargs
-    assert kwargs["channel"] == CONFIGURED_CHANNEL
-    assert kwargs["timestamp"] == MESSAGE_TS
-    assert kwargs["name"] == "eyes"
+    add_kwargs = client.reactions_add.await_args.kwargs
+    assert add_kwargs["channel"] == CONFIGURED_CHANNEL
+    assert add_kwargs["timestamp"] == MESSAGE_TS
+    assert add_kwargs["name"] == "eyes"
+
+    client.reactions_remove.assert_awaited_once()
+    remove_kwargs = client.reactions_remove.await_args.kwargs
+    assert remove_kwargs["channel"] == CONFIGURED_CHANNEL
+    assert remove_kwargs["timestamp"] == MESSAGE_TS
+    assert remove_kwargs["name"] == "eyes"
+
+
+@pytest.mark.asyncio
+async def test_reaction_removed_on_dispatch_error():
+    service = MagicMock()
+    service.submit_message = AsyncMock(side_effect=RuntimeError("boom"))
+    intake = _intake(service)
+    client = _client()
+
+    await intake._handle_message(_event(), client)
+
+    client.reactions_remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reaction_removed_when_submit_returns_none():
+    service = _run_service(None)
+    intake = _intake(service)
+    client = _client()
+
+    await intake._handle_message(_event(), client)
+
+    client.reactions_remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reaction_removed_when_summary_and_error_empty():
+    silent_result = RunResult(
+        run_id="test-run",
+        success=True,
+        summary="",
+        error=None,
+        duration_ms=1,
+        cost_usd=0.0,
+        turns=1,
+        resume_handle=None,
+    )
+    service = _run_service(silent_result)
+    intake = _intake(service)
+    client = _client()
+
+    await intake._handle_message(_event(), client)
+
+    client.reactions_remove.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reaction_remove_failure_does_not_raise():
+    service = _run_service(_ok_result())
+    intake = _intake(service)
+    client = _client()
+    client.reactions_remove = AsyncMock(side_effect=RuntimeError("slack api down"))
+
+    await intake._handle_message(_event(), client)
+
+    client.reactions_remove.assert_awaited_once()
 
 
 @pytest.mark.asyncio
