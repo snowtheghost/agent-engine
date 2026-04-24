@@ -215,6 +215,7 @@ class ClaudeCodeRunner:
             thinking={"type": "adaptive"},
             effort=self._effort,
             skills="all",
+            system_prompt={"type": "preset", "preset": "claude_code"},
         )
 
     async def _stream_session(

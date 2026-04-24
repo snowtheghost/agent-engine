@@ -14,7 +14,6 @@ _WORKING_REACTION = "eyes"
 
 
 class SlackIntake(Intake):
-
     def __init__(
         self,
         *,
@@ -98,34 +97,36 @@ class SlackIntake(Intake):
             text_preview=text[:100],
         )
 
-        await self._react(client, channel_id, message_ts, _WORKING_REACTION)
-
+        await self._add_reaction(client, channel_id, message_ts, _WORKING_REACTION)
         try:
-            result = await self._run_service.submit_message(
-                resume_key=resume_key,
-                author=user_name,
-                content=text,
-            )
-        except Exception as error:
-            logger.exception("slack_dispatch_failed")
-            await self._send_chunked(client, channel_id, thread_ts, f"[error] {error}")
-            return
+            try:
+                result = await self._run_service.submit_message(
+                    resume_key=resume_key,
+                    author=user_name,
+                    content=text,
+                )
+            except Exception as error:
+                logger.exception("slack_dispatch_failed")
+                await self._send_chunked(client, channel_id, thread_ts, f"[error] {error}")
+                return
 
-        if result is None:
-            return
+            if result is None:
+                return
 
-        if not result.summary and not result.error:
-            logger.info(
-                "slack_reply_skipped_empty",
-                channel_id=channel_id,
-                thread_ts=thread_ts,
-            )
-            return
+            if not result.summary and not result.error:
+                logger.info(
+                    "slack_reply_skipped_empty",
+                    channel_id=channel_id,
+                    thread_ts=thread_ts,
+                )
+                return
 
-        reply_text = result.summary or result.error or ""
-        if not result.success and result.error and not reply_text.startswith("[error]"):
-            reply_text = f"[error] {reply_text}"
-        await self._send_chunked(client, channel_id, thread_ts, reply_text)
+            reply_text = result.summary or result.error or ""
+            if not result.success and result.error and not reply_text.startswith("[error]"):
+                reply_text = f"[error] {reply_text}"
+            await self._send_chunked(client, channel_id, thread_ts, reply_text)
+        finally:
+            await self._remove_reaction(client, channel_id, message_ts, _WORKING_REACTION)
 
     async def _resolve_user_name(self, client: Any, user_id: str) -> str:
         if not user_id:
@@ -146,11 +147,21 @@ class SlackIntake(Intake):
         self._user_name_cache[user_id] = name
         return name
 
-    async def _react(self, client: Any, channel_id: str, message_ts: str, emoji: str) -> None:
+    async def _add_reaction(
+        self, client: Any, channel_id: str, message_ts: str, emoji: str
+    ) -> None:
         try:
             await client.reactions_add(channel=channel_id, timestamp=message_ts, name=emoji)
         except Exception:
             logger.debug("slack_reaction_add_failed", channel=channel_id, emoji=emoji)
+
+    async def _remove_reaction(
+        self, client: Any, channel_id: str, message_ts: str, emoji: str
+    ) -> None:
+        try:
+            await client.reactions_remove(channel=channel_id, timestamp=message_ts, name=emoji)
+        except Exception:
+            logger.debug("slack_reaction_remove_failed", channel=channel_id, emoji=emoji)
 
     async def _send_chunked(
         self,
