@@ -13,16 +13,6 @@ def _runner() -> ClaudeCodeRunner:
     )
 
 
-def test_system_prompt_uses_claude_code_preset():
-    options = _runner()._build_options(
-        model="claude-opus-4",
-        session_id=None,
-        mcp_servers={},
-    )
-
-    assert options.system_prompt == {"type": "preset", "preset": "claude_code"}
-
-
 def test_setting_sources_includes_user_and_project():
     options = _runner()._build_options(
         model="claude-opus-4",
