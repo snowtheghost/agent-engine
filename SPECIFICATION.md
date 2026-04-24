@@ -368,7 +368,8 @@ Chunk+embed work for both vault writes and thread appends flows through a shared
 ### Claude Code (`providers/claude/`)
 
 - `ClaudeCodeRunner` wraps `claude_agent_sdk.ClaudeSDKClient`.
-- Builds `ClaudeAgentOptions` with `cwd`, `mcp_servers` (engine-supplied vault tools plus any `.mcp/*.json` in `cwd`), `resume`, `allowed_tools` (all `mcp__<server>` servers), `disallowed_tools=["Task","Agent"]`, `thinking={"type":"adaptive"}`, `effort="max"`, `permission_mode="bypassPermissions"`.
+- Builds `ClaudeAgentOptions` with `cwd`, `mcp_servers` (engine-supplied vault tools plus any `.mcp/*.json` in `cwd`), `resume`, `allowed_tools` (all `mcp__<server>` servers), `disallowed_tools=["Task","Agent"]`, `thinking={"type":"adaptive"}`, `effort="max"`, `permission_mode="bypassPermissions"`, `system_prompt={"type":"preset","preset":"claude_code"}`.
+- The `claude_code` system-prompt preset keeps the CLI on its default behavior, which auto-loads `CLAUDE.md` from the project `cwd` (plus any parent `CLAUDE.md` chain). Leaving `system_prompt` unset causes the SDK to emit `--system-prompt ""` (explicit empty), which suppresses default behavior and the CLAUDE.md chain.
 - Streams assistant messages, logs tool executions via `tool_detail.extract_tool_detail`, collects `ResultMessage` into `RunResult`.
 - On resume with a stale session id, attempts one rollback via `session_rollback.rollback_session()` before giving up.
 - Token refresh via `token.ensure_token_fresh()` before every run; reads `~/.claude/.credentials.json`.
